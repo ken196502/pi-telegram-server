@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi Telegram webhook service
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pi-telegram-setup
+ExecStart=/usr/bin/node /opt/pi-telegram-setup/src/gateway.mjs
+Restart=on-failure
+RestartSec=3
+EnvironmentFile=/opt/pi-telegram-setup/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.pi-telegram</string>
+  <key>WorkingDirectory</key><string>/opt/pi-telegram-setup</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/node</string><string>/opt/pi-telegram-setup/src/gateway.mjs</string></array>
+  <key>EnvironmentVariables</key><dict><key>NODE_ENV</key><string>production</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+</dict></plist>

@@ -1,0 +1,36 @@
+{
+  "name": "pi-telegram-service",
+  "version": "0.1.0",
+  "private": false,
+  "description": "A pure-webhook Telegram Bot API service with authenticated outbound text and file sending.",
+  "type": "module",
+  "keywords": [
+    "pi-coding-agent",
+    "telegram",
+    "telegram-bot",
+    "webhook",
+    "ai-agent"
+  ],
+  "license": "MIT",
+  "files": [
+    ".env.example",
+    "extensions/",
+    "src/",
+    "systemd/",
+    "launchd/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node src/gateway.mjs",
+    "send": "node src/send.mjs",
+    "check": "node --check src/lib.mjs && node --check src/gateway.mjs && node --check src/send.mjs && node --check extensions/telegram-mirror.mjs && node --check test/lib.test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "undici": "^8.10.1"
+  }
+}

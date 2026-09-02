@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(npm:*)",
+      "Shell(curl -s --max-time 10 https://api.telegram.org 2 >& 1)",
+      "Shell(curl -s --max-time 10 \"https://api.telegram.org/bot8696700404:AAH7uI32aCy4WifVes3fIvV1r-Z9eL2yVak/getMe\" 2>&1)",
+      "Shell(node -e \"fetch('https://api.telegram.org/bot8696700404:AAH7uI32aCy4WifVes3fIvV1r-Z9eL2yVak/getMe').then(r => r.json()).then(console.log).catch(console.error)\")",
+      "Shell(node -v)",
+      "Shell(node -e \" const { ProxyAgent, fetch: undiciFetch } = require('undici'); const proxyUrl = process.env.HTTPS_PROXY; const agent = new ProxyAgent(proxyUrl); undiciFetch('https://api.telegram.org/bot8696700404:AAH7uI32aCy4WifVes3fIvV1r-Z9eL2yVak/getMe', { dispatcher: agent }) .then(r => r.json()) .then(d => console.log('ok:', d.ok, d.result?.username)) .catch(console.error); \")",
+      "Shell(node -e \"import('undici').then(m => console.log(Object.keys(m))).catch(e => console.error(e.message))\")",
+      "Shell(node -e  import { ProxyAgent, fetch as undiciFetch } from 'undici'; const proxyUrl = process.env.HTTPS_PROXY; const agent = new ProxyAgent(proxyUrl); const r = await undiciFetch('https://api.telegram.org/bot8696700404:AAH7uI32aCy4WifVes3fIvV1r-Z9eL2yVak/getMe', { dispatcher: agent }); const d = await r.json(); console.log('ok:', d.ok, d.result?.username); )",
+      "Shell(lsof:*)",
+      "Shell(ps:*)",
+      "Shell(curl -s http://127.0.0.1:3093/health)",
+      "Shell(python3 -m json.tool)",
+      "Shell(curl -sv http://127.0.0.1:3093/health 2>&1)",
+      "Shell(git add -A && git commit -F - <<'EOF' Initial commit Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
