@@ -2,8 +2,10 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
+import undici from "undici";
 import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender } from "./lib.mjs";
+
+const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
 loadEnvFile(path.resolve(".env"));
 const config = {
@@ -56,7 +58,7 @@ async function sendDocument(to, filePath, fileName, mimetype, caption) {
   try { fs.accessSync(resolved, fs.constants.R_OK); } catch { throw new Error("filePath is not readable"); }
   const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : path.basename(resolved);
   const type = typeof mimetype === "string" && mimetype.trim() ? mimetype.trim() : guessMimeType(name);
-  const form = new FormData(); form.append("chat_id", chatId); form.append("document", new Blob([fs.readFileSync(resolved)], { type }), name);
+  const form = new UndiciFormData(); form.append("chat_id", chatId); form.append("document", new Blob([fs.readFileSync(resolved)], { type }), name);
   if (typeof caption === "string" && caption.trim()) form.append("caption", caption.trim());
   const result = await telegramRequest("sendDocument", { method: "POST", body: form }); sent += 1; lastSentAt = new Date().toISOString();
   return { to: chatId, messageIds: result?.message_id ? [result.message_id] : [], fileName: name, mimetype: type };
