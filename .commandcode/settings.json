@@ -14,7 +14,9 @@
       "Shell(curl -s http://127.0.0.1:3093/health)",
       "Shell(python3 -m json.tool)",
       "Shell(curl -sv http://127.0.0.1:3093/health 2>&1)",
-      "Shell(git add -A && git commit -F - <<'EOF' Initial commit Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)"
+      "Shell(git add -A && git commit -F - <<'EOF' Initial commit Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(git:*)",
+      "Shell(git add -A && git commit -F - <<'EOF' Add typing indicator and file sending support - Add sendTyping function to show typing status while Pi is thinking - Add extractFilePaths to detect file paths in assistant messages - Add sendFile function to send files via Telegram - Start typing on message_start, stop on message_end - Auto-send detected files in assistant responses - Import toTelegramChatId for proper chat ID handling Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)"
     ],
     "deny": [],
     "defaultMode": "default"
