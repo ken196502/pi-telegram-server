@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import undici from "undici";
-import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender } from "./lib.mjs";
+import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2 } from "./lib.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -48,7 +48,7 @@ async function telegramRequest(method, options = {}) {
 async function sendText(to, text) {
   const chatId = toTelegramChatId(to); const chunks = splitMessage(text, config.messageLimit); if (!chunks.length) throw new Error("message is required");
   const messageIds = [];
-  for (const chunk of chunks) { const result = await telegramRequest("sendMessage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: chunk }) }); messageIds.push(result.message_id); sent += 1; lastSentAt = new Date().toISOString(); }
+  for (const chunk of chunks) { const mdv2 = markdownToMarkdownV2(chunk); const result = await telegramRequest("sendMessage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: mdv2, parse_mode: "MarkdownV2" }) }); messageIds.push(result.message_id); sent += 1; lastSentAt = new Date().toISOString(); }
   return { to: chatId, messageIds };
 }
 async function sendDocument(to, filePath, fileName, mimetype, caption) {
