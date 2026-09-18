@@ -7,4 +7,7 @@ session/
 pairing/
 logs/
 .DS_Store
+.tmp/
+tmp/
+coverage/
 

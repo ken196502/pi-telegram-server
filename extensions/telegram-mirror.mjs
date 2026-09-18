@@ -3,6 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { exportMarkdownTablesToHtmlFile, extractMarkdownTables } from "../src/lib.mjs";
 
 function readDotEnv(cwd) {
   const values = {};
@@ -83,6 +84,11 @@ async function sendFile(filePath, settings, caption) {
 async function sendTyping(settings) {
   if (!settings.to || !settings.token) return;
   await post(settings.url, { to: settings.to, action: "typing" }, settings.token).catch(() => {});
+}
+
+async function sendStopTyping(settings) {
+  if (!settings.to || !settings.token) return;
+  await post(settings.url, { to: settings.to, action: "stop_typing" }, settings.token).catch(() => {});
 }
 
 function readJson(req) {
@@ -177,6 +183,10 @@ export default function telegramMirror(pi) {
     if (typingInterval) {
       clearInterval(typingInterval);
       typingInterval = null;
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        void sendStopTyping(s);
+      }
     }
   }
 
@@ -219,15 +229,23 @@ export default function telegramMirror(pi) {
     server = undefined;
   });
 
+  pi.on("agent_start", () => {
+    startTyping();
+  });
+
   pi.on("turn_start", () => {
     startTyping();
   });
 
-  pi.on("turn_end", () => {
-    stopTyping();
+  pi.on("tool_execution_start", () => {
+    startTyping();
   });
 
-  pi.on("tool_execution_start", () => {
+  pi.on("tool_execution_update", () => {
+    startTyping();
+  });
+
+  pi.on("tool_call", () => {
     startTyping();
   });
 
@@ -235,6 +253,20 @@ export default function telegramMirror(pi) {
     if (event?.message?.role === "assistant") {
       startTyping();
     }
+  });
+
+  pi.on("message_update", (event) => {
+    if (event?.message?.role === "assistant") {
+      startTyping();
+    }
+  });
+
+  pi.on("agent_end", () => {
+    stopTyping();
+  });
+
+  pi.on("agent_settled", () => {
+    stopTyping();
   });
 
   pi.on("message_end", (event, ctx) => {
@@ -250,6 +282,26 @@ export default function telegramMirror(pi) {
         void sendFile(filePath, s, `File from Pi: ${path.basename(filePath)}`).catch((e) => ctx.ui.notify(`Telegram file send failed: ${e.message}`, "error"));
       }
     }
+
+    // Automatically extract tables to HTML document with frozen header & first column
+    try {
+      const tables = extractMarkdownTables(message);
+      if (tables.length > 0) {
+        for (const t of tables) {
+          const titleSlug = t.title ? t.title.slice(0, 20).replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, "_") : "table";
+          const htmlFile = exportMarkdownTablesToHtmlFile(t.tableMd, {
+            title: t.title,
+            fileName: `${titleSlug}-${Date.now()}.html`,
+          });
+          if (htmlFile) {
+            void sendFile(htmlFile, s, `📊 ${t.title || "数据表格"}（已冻结表头与首列）`).catch((e) =>
+              ctx.ui.notify(`Telegram table export failed: ${e.message}`, "error")
+            );
+          }
+        }
+      }
+    } catch {}
+
     void mirror(message, s).catch((e) => ctx.ui.notify(`Telegram mirror failed: ${e.message}`, "error"));
   });
 }

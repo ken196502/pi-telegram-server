@@ -49,22 +49,27 @@ async function telegramRequest(method, options = {}) {
 const activeTypingIntervals = new Map();
 
 function startTypingKeepalive(chatId) {
-  stopTypingKeepalive(chatId);
-  void sendChatAction(chatId, "typing").catch(() => {});
-  const interval = setInterval(() => {
+  let entry = activeTypingIntervals.get(chatId);
+  if (!entry) {
     void sendChatAction(chatId, "typing").catch(() => {});
-  }, 4000);
-  const timeout = setTimeout(() => {
+    const interval = setInterval(() => {
+      void sendChatAction(chatId, "typing").catch(() => {});
+    }, 4000);
+    entry = { interval, timeout: null };
+    activeTypingIntervals.set(chatId, entry);
+  }
+  // Refresh watchdog timeout on each typing signal
+  if (entry.timeout) clearTimeout(entry.timeout);
+  entry.timeout = setTimeout(() => {
     stopTypingKeepalive(chatId);
   }, 120000);
-  activeTypingIntervals.set(chatId, { interval, timeout });
 }
 
 function stopTypingKeepalive(chatId) {
   const existing = activeTypingIntervals.get(chatId);
   if (existing) {
     clearInterval(existing.interval);
-    clearTimeout(existing.timeout);
+    if (existing.timeout) clearTimeout(existing.timeout);
     activeTypingIntervals.delete(chatId);
   }
 }
@@ -133,6 +138,14 @@ async function handleOutbound(req, res) {
   const action = body?.action;
   if (action) {
     try {
+      if (action === "typing") {
+        startTypingKeepalive(to);
+        return sendJson(res, 200, { ok: true, to, action });
+      }
+      if (action === "stop_typing") {
+        stopTypingKeepalive(to);
+        return sendJson(res, 200, { ok: true, to, action });
+      }
       const result = await sendChatAction(to, action);
       return sendJson(res, 200, { ok: true, ...result });
     } catch (e) {

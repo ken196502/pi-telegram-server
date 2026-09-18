@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 export function loadEnvFile(filePath, target = process.env) {
   if (!fs.existsSync(filePath)) return target;
@@ -60,6 +61,391 @@ export function escapeHtml(text) {
 
 function escapeHtmlAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
+}
+
+export function stripMarkdownFormatting(text) {
+  return String(text || "")
+    .replace(/\*\*\*(.*?)\*\*\*/g, "$1")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/_(.*?)_/g, "$1")
+    .replace(/~~(.*?)~~/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+}
+
+export function stringDisplayWidth(str) {
+  const plain = stripMarkdownFormatting(str);
+  let width = 0;
+  for (const ch of plain) {
+    const code = ch.codePointAt(0) || 0;
+    // CJK unified ideographs, CJK extensions, fullwidth forms, emoji symbols count as 2 width units
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x20000 && code <= 0x2a6df) ||
+      (code >= 0xff00 && code <= 0xffef) ||
+      (code >= 0x3000 && code <= 0x303f) ||
+      (code >= 0x2e80 && code <= 0x2eff) ||
+      code >= 0x1f000
+    ) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
+export function padCell(text, targetWidth, align = "left") {
+  const currentWidth = stringDisplayWidth(text);
+  const diff = Math.max(0, targetWidth - currentWidth);
+  if (align === "right") {
+    return " ".repeat(diff) + text;
+  }
+  if (align === "center") {
+    const left = Math.floor(diff / 2);
+    const right = diff - left;
+    return " ".repeat(left) + text + " ".repeat(right);
+  }
+  return text + " ".repeat(diff);
+}
+
+export function parseRowCells(rowStr) {
+  let s = rowStr.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+
+export function isTableDelimiter(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("-") || !trimmed.includes("|")) return false;
+  const inner = trimmed.replace(/^\||\|$/g, "").trim();
+  const parts = inner.split("|").map((p) => p.trim());
+  if (parts.length < 1) return false;
+  return parts.every((p) => /^:?-+:?$/.test(p));
+}
+
+export function formatMarkdownTable(tableLines, options = {}) {
+  const { mode = "html", style = process.env.TELEGRAM_TABLE_STYLE || "adaptive" } = options;
+  if (!Array.isArray(tableLines) || tableLines.length < 2) {
+    return Array.isArray(tableLines) ? tableLines.join("\n") : "";
+  }
+
+  const headerCells = parseRowCells(tableLines[0]);
+  const delimCells = parseRowCells(tableLines[1]);
+  const dataRows = tableLines.slice(2).map(parseRowCells);
+  const colCount = Math.max(headerCells.length, ...dataRows.map((r) => r.length));
+
+  // Adaptive Mobile Card Layout:
+  // Telegram mobile clients do not have horizontal scrolling in message bubbles and force-wrap long monospace lines on spaces.
+  // When a table has 3+ columns (or style === "card"), convert each row into a structured mobile card.
+  if (style === "card" || (style === "adaptive" && colCount >= 3)) {
+    if (mode === "html") {
+      const cards = dataRows.map((row, rowIdx) => {
+        const primary = escapeHtml(row[0] || `项 ${rowIdx + 1}`);
+        const fields = [];
+        for (let c = 1; c < colCount; c++) {
+          const label = escapeHtml(headerCells[c] || `列 ${c + 1}`);
+          const val = escapeHtml(row[c] || "—");
+          fields.push(`  • ${label}: <code>${val}</code>`);
+        }
+        return `🔹 <b>${primary}</b>\n${fields.join("\n")}`;
+      });
+      return cards.join("\n\n");
+    }
+    if (mode === "markdownv2") {
+      const cards = dataRows.map((row, rowIdx) => {
+        const primary = escapeMarkdownV2(row[0] || `项 ${rowIdx + 1}`);
+        const fields = [];
+        for (let c = 1; c < colCount; c++) {
+          const label = escapeMarkdownV2(headerCells[c] || `列 ${c + 1}`);
+          const val = escapeMarkdownV2(row[c] || "—");
+          fields.push(`  • ${label}: \`${val}\``);
+        }
+        return `*${primary}*\n${fields.join("\n")}`;
+      });
+      return cards.join("\n\n");
+    }
+  }
+
+  // Grid Layout (Monospace <pre>):
+  // Used for 2-column key-value tables or when style === "grid"
+  const alignments = delimCells.map((c) => {
+    const hasLeft = c.startsWith(":");
+    const hasRight = c.endsWith(":");
+    if (hasLeft && hasRight) return "center";
+    if (hasRight) return "right";
+    return "left";
+  });
+
+  const allRows = [headerCells, ...dataRows];
+  const colWidths = Array(colCount).fill(0);
+
+  for (const row of allRows) {
+    for (let c = 0; c < colCount; c++) {
+      const cellText = row[c] || "";
+      colWidths[c] = Math.max(colWidths[c], stringDisplayWidth(cellText));
+    }
+  }
+
+  const formattedHeader = Array.from({ length: colCount }, (_, i) =>
+    padCell(headerCells[i] || "", colWidths[i], alignments[i] || "left")
+  ).join(" │ ");
+
+  const divider = colWidths.map((w) => "─".repeat(Math.max(w, 1))).join("─┼─");
+
+  const formattedData = dataRows.map((row) =>
+    Array.from({ length: colCount }, (_, i) =>
+      padCell(row[i] || "", colWidths[i], alignments[i] || "left")
+    ).join(" │ ")
+  );
+
+  const tableText = [formattedHeader, divider, ...formattedData].join("\n");
+
+  if (mode === "markdownv2") {
+    return "```\n" + tableText + "\n```";
+  }
+
+  const escaped = escapeHtml(tableText);
+  const isExpandable = dataRows.length > 6;
+  const preBlock = `<pre><code>${escaped}</code></pre>`;
+  return isExpandable ? `<blockquote expandable>${preBlock}</blockquote>` : preBlock;
+}
+
+export function renderHtmlTableDocument(markdownTable, options = {}) {
+  const title = options.title || "数据表格";
+  const desc = options.description || "已冻结表头与首列，支持横向和纵向流畅滚动";
+  const lines = (Array.isArray(markdownTable) ? markdownTable : String(markdownTable || "").trim().split(/\r?\n/))
+    .map((l) => l.trim())
+    .filter((l) => l.includes("|"));
+
+  if (lines.length < 2) return "";
+
+  const headerCells = parseRowCells(lines[0]);
+  const delimCells = parseRowCells(lines[1]);
+  const dataRows = lines.slice(2).map(parseRowCells);
+
+  const alignments = delimCells.map((c) => {
+    const hasLeft = c.startsWith(":");
+    const hasRight = c.endsWith(":");
+    if (hasLeft && hasRight) return "center";
+    if (hasRight) return "right";
+    return "left";
+  });
+
+  function cellHtml(val, isHeader = false, colIdx = 0) {
+    const tag = isHeader ? "th" : "td";
+    const align = alignments[colIdx] || "left";
+    const cleanVal = escapeHtml(stripMarkdownFormatting(val || ""));
+    let content = cleanVal;
+
+    if (/^(✅|支持|推荐|正常|active|ready|ok|success|true|yes)$/i.test(cleanVal)) {
+      content = `<span class="badge badge-ok">${cleanVal}</span>`;
+    } else if (/^(❌|不支持|下线|异常|fail|failed|error|false|no)$/i.test(cleanVal)) {
+      content = `<span class="badge badge-error">${cleanVal}</span>`;
+    } else if (/\b(token|tokens|k|m|b|gb|mb|%|ms|s)\b/i.test(cleanVal) && /^\d/.test(cleanVal)) {
+      content = `<span class="badge badge-info">${cleanVal}</span>`;
+    } else if (isHeader) {
+      content = cleanVal;
+    } else if (/^[a-zA-Z0-9_.-]+$/.test(cleanVal) && cleanVal.length > 3) {
+      content = `<code>${cleanVal}</code>`;
+    }
+
+    return `<${tag} style="text-align: ${align}">${content}</${tag}>`;
+  }
+
+  const theadHtml = `<tr>${headerCells.map((h, i) => cellHtml(h, true, i)).join("")}</tr>`;
+  const tbodyHtml = dataRows
+    .map((row) => `<tr>${row.map((c, i) => cellHtml(c, false, i)).join("")}</tr>`)
+    .join("\n        ");
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --primary: #38bdf8;
+      --row-hover: #273549;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .header { margin-bottom: 14px; }
+    h2 { font-size: 1.2rem; margin: 0 0 4px 0; color: var(--primary); }
+    .desc { font-size: 0.82rem; color: var(--text-muted); margin: 0; }
+    .table-container {
+      overflow: auto;
+      max-height: 85vh;
+      background: var(--card-bg);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      position: relative;
+      -webkit-overflow-scrolling: touch;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+    table {
+      border-collapse: separate;
+      border-spacing: 0;
+      width: 100%;
+      font-size: 0.88rem;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #182234;
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 12px 16px;
+      border-bottom: 2px solid var(--border);
+    }
+    th:first-child {
+      position: sticky;
+      left: 0;
+      top: 0;
+      z-index: 4;
+      background: #182234;
+      box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
+    }
+    td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background: var(--card-bg);
+      font-weight: 500;
+      box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--row-hover); }
+    tr:hover td:first-child { background: var(--row-hover); }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85em;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .badge-ok {
+      background: rgba(34, 197, 94, 0.15);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    .badge-error {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .badge-info {
+      background: rgba(56, 189, 248, 0.15);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>📊 ${escapeHtml(title)}</h2>
+    <p class="desc">${escapeHtml(desc)}</p>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        ${theadHtml}
+      </thead>
+      <tbody>
+        ${tbodyHtml}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+}
+
+export function extractMarkdownTables(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const tables = [];
+  let recentTitle = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const headingMatch = line.match(/^#{1,6}\s+(.+)$/);
+    if (headingMatch) {
+      recentTitle = headingMatch[1].trim().replace(/\*\*/g, "");
+      continue;
+    }
+
+    if (i + 1 < lines.length && isTableDelimiter(lines[i + 1]) && line.includes("|")) {
+      const tableLines = [line, lines[i + 1]];
+      let j = i + 2;
+      while (j < lines.length && lines[j].trim() && lines[j].includes("|")) {
+        tableLines.push(lines[j]);
+        j++;
+      }
+      tables.push({
+        title: recentTitle || "数据表格",
+        lines: tableLines,
+        tableMd: tableLines.join("\n"),
+        rowCount: tableLines.length - 2,
+      });
+      i = j - 1;
+      recentTitle = "";
+    }
+  }
+
+  return tables;
+}
+
+export function exportMarkdownTablesToHtmlFile(text, options = {}) {
+  const tables = extractMarkdownTables(text);
+  if (tables.length === 0) return null;
+
+  const targetTable = tables[0];
+  const htmlContent = renderHtmlTableDocument(targetTable.tableMd, {
+    title: options.title || targetTable.title || "数据表格",
+    description: options.description || "已冻结表头与首列，支持横向和纵向流畅滚动",
+  });
+
+  const outDir = options.outputDir || "/tmp";
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
+  }
+
+  const fileName = options.fileName || `table-${Date.now()}.html`;
+  const filePath = path.join(outDir, fileName);
+  fs.writeFileSync(filePath, htmlContent, "utf8");
+  return filePath;
 }
 
 export function formatJsonForTelegram(input, options = {}) {
@@ -207,6 +593,35 @@ export function markdownToHtml(text) {
     return pushToken(`<pre><code>${escapeHtml(code)}</code></pre>`);
   });
 
+  // 2. Markdown tables: | header | ...
+  {
+    const scanLines = src.split(/\r?\n/);
+    const intermediate = [];
+    for (let i = 0; i < scanLines.length; i++) {
+      const cur = scanLines[i];
+      const nxt = scanLines[i + 1];
+      if (nxt !== undefined && isTableDelimiter(nxt) && cur.includes("|") && !cur.includes("\x00TOK")) {
+        const tableLines = [cur, nxt];
+        let j = i + 2;
+        while (
+          j < scanLines.length &&
+          scanLines[j].trim() &&
+          scanLines[j].includes("|") &&
+          !scanLines[j].includes("\x00TOK")
+        ) {
+          tableLines.push(scanLines[j]);
+          j++;
+        }
+        const formattedTable = formatMarkdownTable(tableLines, { mode: "html" });
+        intermediate.push(pushToken(formattedTable));
+        i = j - 1;
+      } else {
+        intermediate.push(cur);
+      }
+    }
+    src = intermediate.join("\n");
+  }
+
   // Helper for inline formatting
   function formatInline(inlineText) {
     const inlineTokens = [];
@@ -351,6 +766,35 @@ export function markdownToMarkdownV2(text) {
   src = src.replace(/```([\s\S]*?)```/g, (_match, code) => {
     return pushToken("```" + escapeCode(code) + "```");
   });
+
+  // 2. Markdown tables
+  {
+    const scanLines = src.split(/\r?\n/);
+    const intermediate = [];
+    for (let i = 0; i < scanLines.length; i++) {
+      const cur = scanLines[i];
+      const nxt = scanLines[i + 1];
+      if (nxt !== undefined && isTableDelimiter(nxt) && cur.includes("|") && !cur.includes("\x00TOK")) {
+        const tableLines = [cur, nxt];
+        let j = i + 2;
+        while (
+          j < scanLines.length &&
+          scanLines[j].trim() &&
+          scanLines[j].includes("|") &&
+          !scanLines[j].includes("\x00TOK")
+        ) {
+          tableLines.push(scanLines[j]);
+          j++;
+        }
+        const formattedTable = formatMarkdownTable(tableLines, { mode: "markdownv2" });
+        intermediate.push(pushToken(formattedTable));
+        i = j - 1;
+      } else {
+        intermediate.push(cur);
+      }
+    }
+    src = intermediate.join("\n");
+  }
 
   function formatInline(inlineText) {
     const inlineTokens = [];
