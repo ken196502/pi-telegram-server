@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import undici from "undici";
-import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2 } from "./lib.mjs";
+import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2, markdownToHtml } from "./lib.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -22,6 +22,7 @@ const config = {
   inboundToken: process.env.INBOUND_WEBHOOK_TOKEN || "",
   allowedSenders: parseAllowedSenders(process.env.TELEGRAM_INBOUND_ALLOWED_SENDERS || ""),
   polling: String(process.env.TELEGRAM_POLLING || "").toLowerCase() === "true",
+  parseMode: (process.env.TELEGRAM_PARSE_MODE || "HTML").toUpperCase(),
 };
 if (!config.token) throw new Error("TELEGRAM_BOT_TOKEN is required");
 if (!config.webhookToken) throw new Error("WEBHOOK_TOKEN is required");
@@ -45,14 +46,76 @@ async function telegramRequest(method, options = {}) {
   if (!response.ok || !body.ok) throw new Error(body.description || `Telegram API HTTP ${response.status}`);
   return body.result;
 }
+const activeTypingIntervals = new Map();
+
+function startTypingKeepalive(chatId) {
+  stopTypingKeepalive(chatId);
+  void sendChatAction(chatId, "typing").catch(() => {});
+  const interval = setInterval(() => {
+    void sendChatAction(chatId, "typing").catch(() => {});
+  }, 4000);
+  const timeout = setTimeout(() => {
+    stopTypingKeepalive(chatId);
+  }, 120000);
+  activeTypingIntervals.set(chatId, { interval, timeout });
+}
+
+function stopTypingKeepalive(chatId) {
+  const existing = activeTypingIntervals.get(chatId);
+  if (existing) {
+    clearInterval(existing.interval);
+    clearTimeout(existing.timeout);
+    activeTypingIntervals.delete(chatId);
+  }
+}
+
 async function sendText(to, text) {
-  const chatId = toTelegramChatId(to); const chunks = splitMessage(text, config.messageLimit); if (!chunks.length) throw new Error("message is required");
+  const chatId = toTelegramChatId(to);
+  stopTypingKeepalive(chatId);
+  const chunks = splitMessage(text, config.messageLimit);
+  if (!chunks.length) throw new Error("message is required");
   const messageIds = [];
-  for (const chunk of chunks) { const mdv2 = markdownToMarkdownV2(chunk); const result = await telegramRequest("sendMessage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: mdv2, parse_mode: "MarkdownV2" }) }); messageIds.push(result.message_id); sent += 1; lastSentAt = new Date().toISOString(); }
+  const useMdv2 = config.parseMode === "MARKDOWNV2";
+  for (const chunk of chunks) {
+    const formatted = useMdv2 ? markdownToMarkdownV2(chunk) : markdownToHtml(chunk);
+    const parseMode = useMdv2 ? "MarkdownV2" : "HTML";
+    try {
+      const result = await telegramRequest("sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: formatted, parse_mode: parseMode })
+      });
+      messageIds.push(result.message_id);
+      sent += 1;
+      lastSentAt = new Date().toISOString();
+    } catch (err) {
+      log("warn", `${parseMode} sendMessage failed, falling back to plain text`, { error: err.message });
+      const result = await telegramRequest("sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: chunk })
+      });
+      messageIds.push(result.message_id);
+      sent += 1;
+      lastSentAt = new Date().toISOString();
+    }
+  }
   return { to: chatId, messageIds };
 }
+async function sendChatAction(to, action = "typing") {
+  const chatId = toTelegramChatId(to);
+  const result = await telegramRequest("sendChatAction", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, action }),
+  });
+  return { to: chatId, action, result };
+}
+
 async function sendDocument(to, filePath, fileName, mimetype, caption) {
-  const chatId = toTelegramChatId(to); if (typeof filePath !== "string" || !filePath.trim()) throw new Error("filePath is required");
+  const chatId = toTelegramChatId(to);
+  stopTypingKeepalive(chatId);
+  if (typeof filePath !== "string" || !filePath.trim()) throw new Error("filePath is required");
   const resolved = path.resolve(filePath.trim()); let stat; try { stat = fs.statSync(resolved); } catch (e) { if (e.code === "ENOENT") throw new Error("filePath does not exist"); throw new Error(`cannot read filePath: ${e.message}`); }
   if (!stat.isFile()) throw new Error("filePath must reference a regular file");
   try { fs.accessSync(resolved, fs.constants.R_OK); } catch { throw new Error("filePath is not readable"); }
@@ -66,7 +129,17 @@ async function sendDocument(to, filePath, fileName, mimetype, caption) {
 async function handleOutbound(req, res) {
   if (!authorized(req)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
   let body; try { body = await readJson(req); } catch (e) { return sendJson(res, 400, { ok: false, error: e.message }); }
-  const to = body?.to ?? body?.chatId ?? body?.recipient; const message = body?.message ?? body?.text ?? body?.body ?? ""; const filePath = body?.filePath ?? body?.file ?? body?.path;
+  const to = body?.to ?? body?.chatId ?? body?.recipient;
+  const action = body?.action;
+  if (action) {
+    try {
+      const result = await sendChatAction(to, action);
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (e) {
+      return sendJson(res, status === "connected" ? 400 : 503, { ok: false, error: e.message });
+    }
+  }
+  const message = body?.message ?? body?.text ?? body?.body ?? ""; const filePath = body?.filePath ?? body?.file ?? body?.path;
   if ((typeof message !== "string" || !message.trim()) && (typeof filePath !== "string" || !filePath.trim())) return sendJson(res, 400, { ok: false, error: "message or filePath is required" });
   try { const result = filePath ? await sendDocument(to, filePath, body?.fileName, body?.mimetype ?? body?.mimeType, message) : await sendText(to, message); sendJson(res, 200, { ok: true, ...result }); }
   catch (e) { sendJson(res, status === "connected" ? 400 : 503, { ok: false, error: e.message }); }
@@ -83,7 +156,12 @@ function processUpdate(update) {
   if (updateId) { seenUpdates.add(updateId); while (seenUpdates.size > 1000) seenUpdates.delete(seenUpdates.values().next().value); }
   if (text) {
     const chatId = message?.chat?.id; const senderId = message?.from?.id ?? chatId;
-    if (chatId !== undefined && isAllowedSender(senderId, config.allowedSenders)) { received += 1; lastReceivedAt = new Date().toISOString(); void forwardInbound({ type: "telegram_message", messageId: `${updateId}:${message.message_id ?? ""}`, chatId: String(chatId), senderId: String(senderId), body: text, timestamp: Number(message.date || Math.floor(Date.now() / 1000)) }).catch((e) => log("warn", "inbound webhook failed", { error: e.message })); }
+    if (chatId !== undefined && isAllowedSender(senderId, config.allowedSenders)) {
+      received += 1;
+      lastReceivedAt = new Date().toISOString();
+      startTypingKeepalive(String(chatId));
+      void forwardInbound({ type: "telegram_message", messageId: `${updateId}:${message.message_id ?? ""}`, chatId: String(chatId), senderId: String(senderId), body: text, timestamp: Number(message.date || Math.floor(Date.now() / 1000)) }).catch((e) => log("warn", "inbound webhook failed", { error: e.message }));
+    }
   }
 }
 async function handleTelegramWebhook(req, res) {
@@ -105,9 +183,9 @@ async function startPolling() {
     }
   }
 }
-function startHttp() { const server = http.createServer(async (req, res) => { const url = new URL(req.url || "/", `http://${config.host}`); if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "telegram", status, webhookPath: config.webhookPath, inboundEnabled: Boolean(config.inboundUrl && config.inboundToken), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), sent, received, forwarded, lastSentAt, lastReceivedAt }); if (req.method === "GET" && url.pathname === "/") return sendJson(res, 200, { ok: true, service: "telegram", endpoints: { health: "GET /health", webhook: "POST /webhook", telegramWebhook: `POST ${config.webhookPath}` } }); if (req.method === "POST" && ["/webhook", "/send"].includes(url.pathname)) return handleOutbound(req, res); if (req.method === "POST" && url.pathname === config.webhookPath) return handleTelegramWebhook(req, res); sendJson(res, req.method === "POST" ? 404 : 405, { ok: false, error: "not found" }); }); server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port })); }
+function startHttp() { const server = http.createServer(async (req, res) => { const url = new URL(req.url || "/", `http://${config.host}`); if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "telegram", status, webhookPath: config.webhookPath, inboundEnabled: Boolean(config.inboundUrl && config.inboundToken), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), sent, received, forwarded, lastSentAt, lastReceivedAt }); if (req.method === "GET" && url.pathname === "/") return sendJson(res, 200, { ok: true, service: "telegram", endpoints: { health: "GET /health", webhook: "POST /webhook", telegramWebhook: `POST ${config.webhookPath}` } }); if (req.method === "POST" && ["/webhook", "/send", "/typing"].includes(url.pathname)) return handleOutbound(req, res); if (req.method === "POST" && url.pathname === config.webhookPath) return handleTelegramWebhook(req, res); sendJson(res, req.method === "POST" ? 404 : 405, { ok: false, error: "not found" }); }); server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port })); }
 async function start() { startHttp(); try { await telegramRequest("getMe"); if (config.polling) { await telegramRequest("deleteWebhook"); void startPolling(); } else if (config.webhookUrl) { await telegramRequest("setWebhook", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: config.webhookUrl, ...(config.webhookSecret ? { secret_token: config.webhookSecret } : {}) }) }); } status = "connected"; log("info", "Telegram Bot API connected", { mode: config.polling ? "polling" : "webhook" }); } catch (e) { status = "disconnected"; log("error", "Telegram startup failed", { error: e.message }); } }
 process.on("SIGINT", () => process.exit(0)); process.on("SIGTERM", () => process.exit(0));
 await start();
 
-export { sendText, sendDocument, handleTelegramWebhook };
+export { sendText, sendDocument, sendChatAction, handleTelegramWebhook };

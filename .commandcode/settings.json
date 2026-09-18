@@ -23,7 +23,8 @@
       "Shell(curl -s -v http://localhost:3093/health 2>&1)",
       "Shell(curl -s --noproxy localhost -X POST http://localhost:3093/webhook \\ -H \"Authorization: Bearer 123\" \\ -H \"Content-Type: application/json\" \\ -d '{\"to\":\"5971350987\",\"message\":\"hello\"}')",
       "Shell(ls:*)",
-      "Shell(echo:*)"
+      "Shell(echo:*)",
+      "Shell(cd /Users/lume/Documents/pi_telegram_setup && git commit -F - <<'EOF' Add MarkdownV2 converter for Telegram messages - Add markdownToMarkdownV2() to lib.mjs for standard MD to Telegram MarkdownV2 conversion - Handles bold, italic, strikethrough, code, links with proper escaping - Integrate converter in gateway.mjs sendText() with parse_mode MarkdownV2 Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)"
     ],
     "deny": [],
     "defaultMode": "default"

@@ -1,6 +1,8 @@
 .env
 node_modules/
 npm-debug.log*
+*.log
+gateway.log
 session/
 pairing/
 logs/
