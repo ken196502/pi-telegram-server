@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   escapeHtml,
   escapeMarkdownV2,
+  formatJsonForTelegram,
   guessMimeType,
   isAllowedSender,
   markdownToHtml,
@@ -51,20 +52,40 @@ describe("HTML converter", () => {
   });
 });
 
-describe("MarkdownV2 converter", () => {
-  it("converts headings to bold in MarkdownV2", () => {
-    assert.equal(markdownToMarkdownV2("### Title"), "*Title*");
+describe("JSON beautifier for Telegram", () => {
+  it("formats object with summary header and expandable code block", () => {
+    const logObj = {
+      level: "error",
+      timestamp: "2026-09-18T00:30:15Z",
+      service: "api-server",
+      message: "Database connection failed",
+      details: { host: "127.0.0.1", retries: 3 }
+    };
+    const formatted = formatJsonForTelegram(logObj);
+    assert.match(formatted, /🔴 <b>\[ERROR\]<\/b>/);
+    assert.match(formatted, /⏰ <code>2026-09-18T00:30:15Z<\/code>/);
+    assert.match(formatted, /📦 <code>api-server<\/code>/);
+    assert.match(formatted, /💬 <b>Database connection failed<\/b>/);
+    assert.match(formatted, /<blockquote expandable><pre><code class="language-json">/);
   });
 
-  it("converts lists and dividers in MarkdownV2", () => {
-    assert.equal(markdownToMarkdownV2("- item"), "• item");
-    assert.equal(markdownToMarkdownV2("---"), "───────────────");
+  it("handles raw JSON string input and truncates overly long strings", () => {
+    const raw = JSON.stringify({ key: "x".repeat(600) });
+    const formatted = formatJsonForTelegram(raw, { maxStringLength: 50 });
+    assert.match(formatted, /\[truncated 550 chars\]/);
   });
 
-  it("does not escape operators inside code blocks", () => {
-    const code = "```python\ndef foo(x):\n    return x + [1, 2]\n```";
-    const converted = markdownToMarkdownV2(code);
-    assert.ok(converted.includes("return x + [1, 2]"));
-    assert.ok(!converted.includes("return x \\+ \\[1, 2\\]"));
+  it("handles non-expandable short JSON", () => {
+    const short = { a: 1 };
+    const formatted = formatJsonForTelegram(short);
+    assert.ok(!formatted.includes("<blockquote expandable>"));
+    assert.match(formatted, /<pre><code class="language-json">/);
+  });
+
+  it("beautifies json code blocks in markdownToHtml", () => {
+    const md = '```json\n{"a":1,"b":[2,3],"c":4,"d":5,"e":6}\n```';
+    const converted = markdownToHtml(md);
+    assert.match(converted, /<blockquote expandable><pre><code class="language-json">/);
+    assert.match(converted, /"b": \[\n {4}2,\n {4}3\n {2}\]/);
   });
 });

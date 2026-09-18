@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import undici from "undici";
-import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2, markdownToHtml } from "./lib.mjs";
+import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram } from "./lib.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -139,6 +139,35 @@ async function handleOutbound(req, res) {
       return sendJson(res, status === "connected" ? 400 : 503, { ok: false, error: e.message });
     }
   }
+
+  const jsonPayload = body?.json ?? body?.data ?? body?.log;
+  if (jsonPayload !== undefined) {
+    try {
+      let parsed = jsonPayload;
+      if (typeof jsonPayload === "string") {
+        try { parsed = JSON.parse(jsonPayload); } catch {}
+      }
+      const rawFormatted = formatJsonForTelegram(parsed, body?.options || {});
+      if (rawFormatted.length <= config.messageLimit) {
+        const result = await sendText(to, rawFormatted);
+        return sendJson(res, 200, { ok: true, ...result });
+      }
+      // If JSON payload is very large, save to temporary file and send as a document attachment
+      const tmpFile = path.resolve(`/tmp/log-${Date.now()}.json`);
+      const rawText = typeof jsonPayload === "string" ? jsonPayload : JSON.stringify(jsonPayload, null, 2);
+      fs.writeFileSync(tmpFile, rawText, "utf8");
+      try {
+        const caption = body?.caption || `📄 JSON Log (${(Buffer.byteLength(rawText) / 1024).toFixed(1)} KB)`;
+        const result = await sendDocument(to, tmpFile, body?.fileName || `log-${Date.now()}.json`, "application/json", caption);
+        return sendJson(res, 200, { ok: true, ...result });
+      } finally {
+        try { fs.unlinkSync(tmpFile); } catch {}
+      }
+    } catch (e) {
+      return sendJson(res, status === "connected" ? 400 : 503, { ok: false, error: e.message });
+    }
+  }
+
   const message = body?.message ?? body?.text ?? body?.body ?? ""; const filePath = body?.filePath ?? body?.file ?? body?.path;
   if ((typeof message !== "string" || !message.trim()) && (typeof filePath !== "string" || !filePath.trim())) return sendJson(res, 400, { ok: false, error: "message or filePath is required" });
   try { const result = filePath ? await sendDocument(to, filePath, body?.fileName, body?.mimetype ?? body?.mimeType, message) : await sendText(to, message); sendJson(res, 200, { ok: true, ...result }); }

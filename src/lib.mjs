@@ -62,6 +62,97 @@ function escapeHtmlAttr(text) {
   return escapeHtml(text).replace(/"/g, "&quot;");
 }
 
+export function formatJsonForTelegram(input, options = {}) {
+  const {
+    indent = 2,
+    expandable = true,
+    maxStringLength = 500,
+    summary = true,
+  } = options;
+
+  let obj;
+  if (typeof input === "string") {
+    try {
+      obj = JSON.parse(input.trim());
+    } catch {
+      return escapeHtml(input);
+    }
+  } else if (typeof input === "object" && input !== null) {
+    obj = input;
+  } else {
+    return escapeHtml(String(input));
+  }
+
+  function truncateStrings(val) {
+    if (typeof val === "string") {
+      if (maxStringLength && val.length > maxStringLength) {
+        return val.slice(0, maxStringLength) + `… [truncated ${val.length - maxStringLength} chars]`;
+      }
+      return val;
+    }
+    if (Array.isArray(val)) {
+      return val.map(truncateStrings);
+    }
+    if (val && typeof val === "object") {
+      const res = {};
+      for (const [k, v] of Object.entries(val)) {
+        res[k] = truncateStrings(v);
+      }
+      return res;
+    }
+    return val;
+  }
+
+  const sanitized = truncateStrings(obj);
+  const jsonStr = JSON.stringify(sanitized, null, indent);
+  const lineCount = jsonStr.split("\n").length;
+  const escapedJson = escapeHtml(jsonStr);
+
+  let summaryHeader = "";
+  if (summary && typeof obj === "object" && obj !== null && !Array.isArray(obj)) {
+    const parts = [];
+    const level = obj.level || obj.severity || obj.status;
+    const time = obj.timestamp || obj.time || obj.date;
+    const msg = obj.message || obj.msg || obj.error || obj.title;
+    const service = obj.service || obj.app || obj.name;
+
+    if (level) {
+      const levelUpper = String(level).toUpperCase();
+      let icon = "ℹ️";
+      if (["ERROR", "FATAL", "CRITICAL"].includes(levelUpper)) icon = "🔴";
+      else if (["WARN", "WARNING"].includes(levelUpper)) icon = "🟡";
+      else if (["SUCCESS", "OK"].includes(levelUpper)) icon = "🟢";
+      else if (["DEBUG", "TRACE"].includes(levelUpper)) icon = "🔍";
+      parts.push(`${icon} <b>[${escapeHtml(levelUpper)}]</b>`);
+    }
+
+    if (time) {
+      parts.push(`⏰ <code>${escapeHtml(String(time))}</code>`);
+    }
+
+    if (service) {
+      parts.push(`📦 <code>${escapeHtml(String(service))}</code>`);
+    }
+
+    let headerLine = parts.join(" • ");
+    if (msg) {
+      headerLine = (headerLine ? headerLine + "\n" : "") + `💬 <b>${escapeHtml(String(msg))}</b>`;
+    }
+
+    if (headerLine) {
+      summaryHeader = headerLine + "\n\n";
+    }
+  }
+
+  const isExpandable = expandable && lineCount > 4;
+  const codeBlock = `<pre><code class="language-json">${escapedJson}</code></pre>`;
+  const formattedBlock = isExpandable
+    ? `<blockquote expandable>${codeBlock}</blockquote>`
+    : codeBlock;
+
+  return summaryHeader + formattedBlock;
+}
+
 export function markdownToHtml(text) {
   if (!text) return "";
 
@@ -74,8 +165,23 @@ export function markdownToHtml(text) {
 
   // 1. Multi-line code blocks: ```lang\ncode```
   let src = String(text).replace(/```([a-zA-Z0-9_+-]*)\r?\n([\s\S]*?)```/g, (_match, lang, code) => {
-    const cleanLang = (lang || "").trim();
+    const cleanLang = (lang || "").trim().toLowerCase();
     const cleanCode = code.endsWith("\n") ? code.slice(0, -1) : code;
+
+    // Prettify JSON code blocks and wrap in expandable blockquote if multiline
+    if (cleanLang === "json") {
+      try {
+        const parsed = JSON.parse(cleanCode);
+        const pretty = JSON.stringify(parsed, null, 2);
+        const escaped = escapeHtml(pretty);
+        const lineCount = pretty.split("\n").length;
+        if (lineCount > 4) {
+          return pushToken(`<blockquote expandable><pre><code class="language-json">${escaped}</code></pre></blockquote>`);
+        }
+        return pushToken(`<pre><code class="language-json">${escaped}</code></pre>`);
+      } catch {}
+    }
+
     const escaped = escapeHtml(cleanCode);
     if (cleanLang) {
       return pushToken(`<pre><code class="language-${escapeHtmlAttr(cleanLang)}">${escaped}</code></pre>`);
@@ -85,6 +191,19 @@ export function markdownToHtml(text) {
 
   // Single-line code block: ```code```
   src = src.replace(/```([\s\S]*?)```/g, (_match, code) => {
+    const trimmed = code.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const pretty = JSON.stringify(parsed, null, 2);
+        const escaped = escapeHtml(pretty);
+        const lineCount = pretty.split("\n").length;
+        if (lineCount > 4) {
+          return pushToken(`<blockquote expandable><pre><code class="language-json">${escaped}</code></pre></blockquote>`);
+        }
+        return pushToken(`<pre><code class="language-json">${escaped}</code></pre>`);
+      } catch {}
+    }
     return pushToken(`<pre><code>${escapeHtml(code)}</code></pre>`);
   });
 
