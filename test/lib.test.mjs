@@ -19,6 +19,8 @@ import {
   parseAllowedSenders,
   splitMessage,
   toTelegramChatId,
+  extractReplyInfo,
+  formatReplyPrompt,
 } from "../src/lib.mjs";
 
 describe("Telegram helpers", () => {
@@ -223,5 +225,123 @@ describe("Markdown Table renderer for Telegram", () => {
     assert.match(content, /Google/);
     assert.match(content, /Gemini/);
     fs.unlinkSync(filePath);
+  });
+});
+
+describe("Reply & Quote formatting", () => {
+  it("returns null when message has no reply_to_message", () => {
+    assert.equal(extractReplyInfo(null), null);
+    assert.equal(extractReplyInfo({}), null);
+    assert.equal(extractReplyInfo({ text: "hello" }), null);
+  });
+
+  it("extracts text and author from reply_to_message", () => {
+    const msg = {
+      message_id: 100,
+      text: "I agree with this",
+      reply_to_message: {
+        message_id: 99,
+        from: { id: 12345, username: "alice_dev", first_name: "Alice" },
+        text: "Should we refactor the gateway?",
+      },
+    };
+
+    const info = extractReplyInfo(msg);
+    assert.ok(info);
+    assert.equal(info.messageId, 99);
+    assert.equal(info.senderId, "12345");
+    assert.equal(info.senderName, "@alice_dev");
+    assert.equal(info.isBot, false);
+    assert.equal(info.text, "Should we refactor the gateway?");
+    assert.equal(info.isQuote, false);
+  });
+
+  it("uses Assistant when replying to a bot", () => {
+    const msg = {
+      message_id: 102,
+      text: "Yes, please do",
+      reply_to_message: {
+        message_id: 101,
+        from: { id: 8696700404, is_bot: true, first_name: "PiBot" },
+        text: "Task completed successfully.",
+      },
+    };
+
+    const info = extractReplyInfo(msg);
+    assert.ok(info);
+    assert.equal(info.senderName, "PiBot");
+    assert.equal(info.isBot, true);
+    assert.equal(info.text, "Task completed successfully.");
+  });
+
+  it("prioritizes Telegram quote feature text over entire message text", () => {
+    const msg = {
+      message_id: 105,
+      text: "Fix this specific part",
+      quote: {
+        text: "Error: ECONNREFUSED 127.0.0.1:3093",
+      },
+      reply_to_message: {
+        message_id: 104,
+        from: { id: 555, first_name: "Bob" },
+        text: "Full log output:\nError: ECONNREFUSED 127.0.0.1:3093\nEnd of log",
+      },
+    };
+
+    const info = extractReplyInfo(msg);
+    assert.ok(info);
+    assert.equal(info.text, "Error: ECONNREFUSED 127.0.0.1:3093");
+    assert.equal(info.isQuote, true);
+  });
+
+  it("handles media messages in reply without text", () => {
+    const docMsg = {
+      reply_to_message: {
+        message_id: 10,
+        from: { id: 1, first_name: "DocSender" },
+        document: { file_name: "architecture.pdf" },
+      },
+    };
+    assert.equal(extractReplyInfo(docMsg).text, "[Document: architecture.pdf]");
+
+    const photoMsg = {
+      reply_to_message: {
+        message_id: 11,
+        from: { id: 1, first_name: "PhotoSender" },
+        photo: [{ file_id: "abc" }],
+      },
+    };
+    assert.equal(extractReplyInfo(photoMsg).text, "[Photo]");
+  });
+
+  it("formats reply prompt with markdown blockquote", () => {
+    const replyInfo = {
+      senderName: "@alice",
+      text: "First line of quoted message\nSecond line of quoted message",
+    };
+
+    const formatted = formatReplyPrompt("My reply to Alice", replyInfo);
+    assert.equal(
+      formatted,
+      "[Replying to @alice]:\n> First line of quoted message\n> Second line of quoted message\n\nMy reply to Alice"
+    );
+  });
+
+  it("truncates overly long quote text gracefully", () => {
+    const longText = "A".repeat(1500);
+    const replyInfo = {
+      senderName: "Assistant",
+      text: longText,
+    };
+
+    const formatted = formatReplyPrompt("Follow up", replyInfo, { maxQuoteLength: 100 });
+    assert.ok(formatted.includes("...[truncated]"));
+    assert.ok(formatted.includes("[Replying to Assistant]:"));
+    assert.ok(formatted.includes("Follow up"));
+  });
+
+  it("returns clean body when replyInfo is missing or has no text", () => {
+    assert.equal(formatReplyPrompt("Just text", null), "Just text");
+    assert.equal(formatReplyPrompt("Just text", { text: "" }), "Just text");
   });
 });

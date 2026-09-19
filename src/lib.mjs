@@ -903,3 +903,75 @@ export function guessMimeType(fileName) {
   const types = { pdf: "application/pdf", txt: "text/plain", csv: "text/csv", json: "application/json", zip: "application/zip", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", mp3: "audio/mpeg", mp4: "video/mp4" };
   return types[extension] || "application/octet-stream";
 }
+
+/**
+ * Extracts replied-to or quoted message metadata from a Telegram Message object.
+ */
+export function extractReplyInfo(message) {
+  const reply = message?.reply_to_message;
+  if (!reply) return null;
+
+  const sender = reply.from;
+  const senderName = sender?.username
+    ? `@${sender.username}`
+    : [sender?.first_name, sender?.last_name].filter(Boolean).join(" ") || (sender?.is_bot ? "Assistant" : "User");
+
+  // Check if user specifically quoted a portion (Telegram quote feature)
+  let text = String(message?.quote?.text || reply.text || reply.caption || "").trim();
+
+  if (!text) {
+    if (reply.document) {
+      text = `[Document: ${reply.document.file_name || "file"}]`;
+    } else if (reply.photo && reply.photo.length > 0) {
+      text = "[Photo]";
+    } else if (reply.video) {
+      text = "[Video]";
+    } else if (reply.voice) {
+      text = "[Voice Message]";
+    } else if (reply.audio) {
+      text = "[Audio]";
+    } else if (reply.sticker) {
+      text = `[Sticker ${reply.sticker.emoji || ""}]`.trim();
+    } else if (reply.poll) {
+      text = `[Poll: ${reply.poll.question || ""}]`.trim();
+    }
+  }
+
+  return {
+    messageId: reply.message_id,
+    senderId: sender?.id ? String(sender.id) : undefined,
+    senderName,
+    isBot: Boolean(sender?.is_bot),
+    text,
+    isQuote: Boolean(message?.quote?.text),
+  };
+}
+
+/**
+ * Formats user message text with a blockquote representation of the replied-to message.
+ */
+export function formatReplyPrompt(bodyText, replyInfo, options = {}) {
+  const cleanBody = String(bodyText || "").trim();
+  if (!replyInfo || !replyInfo.text) {
+    return cleanBody;
+  }
+
+  const maxQuoteLength = options.maxQuoteLength || 1000;
+  let quoteText = String(replyInfo.text).trim();
+  if (quoteText.length > maxQuoteLength) {
+    quoteText = quoteText.slice(0, maxQuoteLength) + " ...[truncated]";
+  }
+
+  const sender = replyInfo.senderName || (replyInfo.isBot ? "Assistant" : "User");
+  const quoteHeader = `[Replying to ${sender}]:`;
+  const quoteLines = quoteText
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+  if (!cleanBody) {
+    return `${quoteHeader}\n${quoteLines}`;
+  }
+
+  return `${quoteHeader}\n${quoteLines}\n\n${cleanBody}`;
+}

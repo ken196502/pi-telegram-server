@@ -1,3 +1,47 @@
+# Development Plan: Reply & Quoted Message Forwarding to Pi
+
+## Objectives
+1. **Synchronize Replied/Quoted Telegram Content to Pi**:
+   When a user replies to an earlier message or uses Telegram's quote feature in chat, the referenced message content and sender must be synchronously forwarded to Pi as context.
+2. **Standardized Blockquote Formatting**:
+   Format the quoted content cleanly using standard Markdown blockquotes (`> ...`) with author attribution (`[Replying to <sender>]:`), allowing Pi to understand context without ambiguity.
+
+## Problem Statement
+1. In `src/gateway.mjs`, `processUpdate(update)` only extracted `const text = String(message?.text || message?.caption || "").trim();`.
+2. The `message.reply_to_message` and `message.quote` objects provided by Telegram Bot API were completely ignored.
+3. Consequently, the inbound webhook payload forwarded to Pi only contained the user's new message text, completely stripping out the quoted message context.
+
+## Solution Architecture
+1. **Helper Functions in `src/lib.mjs`**:
+   - `extractReplyInfo(message)`: Extracts sender name (`@username`, `first_name`, or `Assistant`), message text (from `message.quote.text`, `reply_to_message.text`, `reply_to_message.caption`, or media placeholders like `[Photo]`, `[Document: filename]`), message ID, and quote flag.
+   - `formatReplyPrompt(bodyText, replyInfo)`: Formats the user message with a blockquote header (`[Replying to <sender>]:\n> <quote>\n\n<bodyText>`), with reasonable length truncation if quote exceeds 1000 characters.
+2. **Inbound Forwarding in `src/gateway.mjs`**:
+   - In `processUpdate(update)`: Call `extractReplyInfo(message)` and pass `replyTo` in the inbound webhook payload sent to Pi.
+3. **Prompt Injection in `extensions/telegram-mirror.mjs`**:
+   - When receiving inbound messages, format the user message using `formatReplyPrompt(message.body, message.replyTo)` before dispatching `pi.sendUserMessage(...)`.
+4. **Testing & Service Reload**:
+   - Add unit tests in `test/lib.test.mjs` verifying reply extraction, author attribution, blockquote formatting, and truncation.
+   - Run `npm test` (100% pass rate).
+   - Reload gateway background service and verify `/health`.
+
+## Implementation & Verification Summary
+1. **Implemented `extractReplyInfo` & `formatReplyPrompt` in `src/lib.mjs`**:
+   - Extracts sender name (`@username`, full name, or `Assistant`/`User`).
+   - Retrieves quoted text prioritizing Telegram's selective `message.quote.text`, followed by `reply_to_message.text`, `reply_to_message.caption`, or media placeholders (`[Photo]`, `[Document: filename]`, `[Video]`, etc.).
+   - Prefixes quoted lines with Markdown blockquote syntax (`> ...`).
+   - Gracefully truncates quotes exceeding 1000 characters.
+2. **Updated `processUpdate` in `src/gateway.mjs`**:
+   - Parses `replyTo = extractReplyInfo(message)`.
+   - Forwards `replyTo` in the inbound webhook payload to Pi.
+3. **Updated `extensions/telegram-mirror.mjs`**:
+   - Formats user prompts with `formatReplyPrompt(message.body, message.replyTo)` before injecting via `pi.sendUserMessage(...)`.
+4. **Testing & Service Status**:
+   - 29 unit tests pass (100% pass rate).
+   - Code syntax check (`npm run check`) 0 errors.
+   - Gateway process restarted (`http://127.0.0.1:3093/health` reports status `connected`).
+
+---
+
 # Development Plan: Continuous Typing Indicator & Markdown Table Rendering
 
 ## Objectives

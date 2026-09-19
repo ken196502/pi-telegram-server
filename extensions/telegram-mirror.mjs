@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exportMarkdownTablesToHtmlFile, extractMarkdownTables } from "../src/lib.mjs";
+import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt } from "../src/lib.mjs";
 
 function readDotEnv(cwd) {
   const values = {};
@@ -212,7 +212,8 @@ export default function telegramMirror(pi) {
         if (message.messageId) seen.add(message.messageId);
         if (!message.body?.trim()) throw new Error("body is required");
         startTyping();
-        await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${message.body}`, { deliverAs: "followUp" });
+        const promptText = formatReplyPrompt(message.body, message.replyTo);
+        await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
         res.end('{"ok":true}');
       } catch (e) {
         res.writeHead(400, { "content-type": "application/json" });

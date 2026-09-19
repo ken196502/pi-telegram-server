@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import undici from "undici";
-import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram } from "./lib.mjs";
+import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, parseAllowedSenders, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram, extractReplyInfo } from "./lib.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -202,7 +202,16 @@ function processUpdate(update) {
       received += 1;
       lastReceivedAt = new Date().toISOString();
       startTypingKeepalive(String(chatId));
-      void forwardInbound({ type: "telegram_message", messageId: `${updateId}:${message.message_id ?? ""}`, chatId: String(chatId), senderId: String(senderId), body: text, timestamp: Number(message.date || Math.floor(Date.now() / 1000)) }).catch((e) => log("warn", "inbound webhook failed", { error: e.message }));
+      const replyTo = extractReplyInfo(message);
+      void forwardInbound({
+        type: "telegram_message",
+        messageId: `${updateId}:${message.message_id ?? ""}`,
+        chatId: String(chatId),
+        senderId: String(senderId),
+        body: text,
+        replyTo,
+        timestamp: Number(message.date || Math.floor(Date.now() / 1000))
+      }).catch((e) => log("warn", "inbound webhook failed", { error: e.message }));
     }
   }
 }
