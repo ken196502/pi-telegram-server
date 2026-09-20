@@ -10,4 +10,7 @@ logs/
 .tmp/
 tmp/
 coverage/
+# Generated menu capture files
+*.menu-cache
+menu-state.json
 

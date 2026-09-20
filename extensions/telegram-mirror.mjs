@@ -4,6 +4,17 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, translateInboundSlashCommand } from "../src/lib.mjs";
+import { 
+  tmuxSessionExists, 
+  captureTmuxPane, 
+  parseMenuItems, 
+  detectMenu, 
+  captureMenuByNavigation, 
+  formatMenuForTelegram, 
+  findMenuItemIndex, 
+  selectMenuItem,
+  handleMenuSelection
+} from "../src/tmux-utils.mjs";
 
 function readDotEnv(cwd) {
   const values = {};
@@ -115,6 +126,11 @@ export default function telegramMirror(pi) {
   let server;
   let typingInterval = null;
   const seen = new Set();
+  
+  // Menu state management
+  let currentMenuItems = [];
+  let menuCaptureInProgress = false;
+  let lastMenuCaptureTime = 0;
 
   const get = (cwd) => {
     if (settings) return settings;
@@ -251,9 +267,157 @@ export default function telegramMirror(pi) {
           "• `/compact [notes]` — Compact session context",
           "• `/abort` or `/stop` — Abort current operation",
           "• `/status` — View current model & token usage",
+          "• `/menu` — Capture and display interactive menu from Pi",
+          "• `/menu <number>` — Select menu option by number",
+          "• `/menu capture` — Force menu capture with navigation",
           "• `/help` — Display this command list",
         ].join("\n");
         await mirror(helpText, s).catch(() => {});
+      }
+    },
+  });
+
+  pi.registerCommand("menu", {
+    description: "Capture and interact with Pi's interactive menu",
+    handler: async (args, ctx) => {
+      const s = get(process.cwd());
+      if (!s.to || !s.token) {
+        return ctx.ui.notify("Telegram not configured: set PI_TELEGRAM_TO and PI_TELEGRAM_WEBHOOK_TOKEN", "warning");
+      }
+
+      // Check if tmux session exists
+      if (!tmuxSessionExists("pi")) {
+        await mirror("❌ No active Pi tmux session found. Please ensure Pi is running in a tmux session named 'pi'.", s).catch(() => {});
+        return;
+      }
+
+      // If args provided, try to select menu item
+      if (args && args.trim()) {
+        const selection = args.trim();
+        
+        // Handle special commands
+        if (selection === "capture" || selection === "refresh") {
+          // Force menu capture with navigation
+          menuCaptureInProgress = true;
+          await mirror("🔄 Capturing menu with navigation...", s).catch(() => {});
+          
+          try {
+            currentMenuItems = captureMenuByNavigation("pi", { maxAttempts: 15, delayMs: 100 });
+            lastMenuCaptureTime = Date.now();
+            
+            if (currentMenuItems.length === 0) {
+              await mirror("❌ No menu items detected. Make sure Pi is showing an interactive menu.", s).catch(() => {});
+            } else {
+              const menuText = formatMenuForTelegram(currentMenuItems);
+              await mirror(menuText, s).catch(() => {});
+            }
+          } catch (error) {
+            await mirror(`❌ Menu capture failed: ${error.message}`, s).catch(() => {});
+          } finally {
+            menuCaptureInProgress = false;
+          }
+          return;
+        }
+        
+        if (selection === "clear") {
+          currentMenuItems = [];
+          await mirror("✓ Menu state cleared.", s).catch(() => {});
+          return;
+        }
+        
+        // Try to select menu item
+        if (currentMenuItems.length === 0) {
+          await mirror("❌ No menu captured yet. Use `/menu` first to capture the menu.", s).catch(() => {});
+          return;
+        }
+        
+        const selectedIndex = findMenuItemIndex(currentMenuItems, selection);
+        if (selectedIndex === -1) {
+          const availableOptions = currentMenuItems.map((item, i) => `${i + 1}. ${item.text}`).join("\n");
+          await mirror(`❌ Selection "${selection}" not found. Available options:\n${availableOptions}`, s).catch(() => {});
+          return;
+        }
+        
+        // Send selection to tmux
+        try {
+          selectMenuItem("pi", currentMenuItems, selectedIndex);
+          const selectedItem = currentMenuItems[selectedIndex];
+          await mirror(`✓ Selected: ${selectedItem.text}\nWaiting for Pi to process...`, s).catch(() => {});
+          
+          // Wait a moment and capture the result
+          setTimeout(async () => {
+            try {
+              const resultContent = captureTmuxPane("pi", 50);
+              const menuDetection = detectMenu(resultContent);
+              
+              if (menuDetection.isMenu) {
+                // New menu appeared, capture it
+                const newItems = parseMenuItems(resultContent);
+                if (newItems.length > 0) {
+                  currentMenuItems = newItems;
+                  const menuText = formatMenuForTelegram(currentMenuItems, "📋 New Menu");
+                  await mirror(menuText, s).catch(() => {});
+                }
+              } else {
+                // Show result preview
+                const preview = resultContent.slice(-500).trim();
+                if (preview) {
+                  await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
+                }
+              }
+            } catch (error) {
+              console.error("Error capturing result:", error);
+            }
+          }, 500);
+        } catch (error) {
+          await mirror(`❌ Selection failed: ${error.message}`, s).catch(() => {});
+        }
+        return;
+      }
+
+      // No args - capture current menu
+      if (menuCaptureInProgress) {
+        await mirror("⏳ Menu capture already in progress...", s).catch(() => {});
+        return;
+      }
+
+      menuCaptureInProgress = true;
+      await mirror("🔍 Detecting menu...", s).catch(() => {});
+
+      try {
+        // First, try to capture current screen
+        const content = captureTmuxPane("pi", 100);
+        const menuDetection = detectMenu(content);
+        
+        if (menuDetection.isMenu && menuDetection.confidence >= 50) {
+          // Menu detected, parse it
+          currentMenuItems = parseMenuItems(content);
+          lastMenuCaptureTime = Date.now();
+          
+          if (currentMenuItems.length > 0) {
+            const menuText = formatMenuForTelegram(currentMenuItems);
+            await mirror(menuText, s).catch(() => {});
+          } else {
+            await mirror("🔍 Menu detected but no items could be parsed. Try `/menu capture` to navigate through the menu.", s).catch(() => {});
+          }
+        } else {
+          // No obvious menu, try navigation capture
+          await mirror("🔍 No obvious menu detected. Attempting navigation capture...", s).catch(() => {});
+          
+          currentMenuItems = captureMenuByNavigation("pi", { maxAttempts: 10, delayMs: 100 });
+          lastMenuCaptureTime = Date.now();
+          
+          if (currentMenuItems.length > 0) {
+            const menuText = formatMenuForTelegram(currentMenuItems);
+            await mirror(menuText, s).catch(() => {});
+          } else {
+            await mirror("❌ No menu items found. Make sure Pi is showing an interactive menu, or try `/menu capture` to force navigation.", s).catch(() => {});
+          }
+        }
+      } catch (error) {
+        await mirror(`❌ Menu capture failed: ${error.message}`, s).catch(() => {});
+      } finally {
+        menuCaptureInProgress = false;
       }
     },
   });
