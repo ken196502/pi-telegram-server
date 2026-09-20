@@ -131,11 +131,7 @@ export default function telegramMirror(pi) {
   
   // Menu interception state
   let currentMenuItems = [];
-  let menuMonitorInterval = null;   // the polling interval
-  let menuMonitorActive = false;     // guard against double-start
-  let menuSentToUser = false;        // already sent a menu, waiting for selection
   let menuInProgress = false;        // /menu command capture in progress
-  const MENU_POLL_MS = 1500;        // how often to check tmux
   const MENU_STALE_MS = 120000;     // forget menu after 2 min
   let lastMenuSentAt = 0;
 
@@ -430,57 +426,28 @@ export default function telegramMirror(pi) {
     }
   }
 
-  // ── Tmux menu monitor ──────────────────────────────────────────────
-  // Continuously polls the tmux pane while Pi is processing.
-  // When a menu is detected, collects all items and sends to Telegram.
-  function startMenuMonitor() {
-    if (menuMonitorActive) return;
-    if (!tmuxSessionExists("pi")) return;
-    menuMonitorActive = true;
-    menuSentToUser = false;
-
-    const poll = () => {
-      if (!menuMonitorActive) return;
-      try {
-        if (!tmuxSessionExists("pi")) { stopMenuMonitor(); return; }
-
-        const content = captureTmuxPane("pi", 50);
-        const items = parseMenuItems(content);
-
-        if (items.length >= 2) { // at least 2 items to be a real menu
-          const itemsJson = JSON.stringify(items.map(i => i.text));
-          const prevJson = JSON.stringify(currentMenuItems.map(i => i.text));
-
-          if (itemsJson !== prevJson) {
-            // New or changed menu detected
-            currentMenuItems = items;
-            menuSentToUser = true;
-            lastMenuSentAt = Date.now();
-            stopMenuMonitor(); // Stop polling, we found a menu
-
-            const s = get(process.cwd());
-            if (s.to && s.token) {
-              void mirror(formatMenuForTelegram(items), s).catch(() => {});
-            }
+  // ── Tmux menu check ───────────────────────────────────────────────
+  // Check tmux for a menu, collect items by pressing Down, send to Telegram.
+  // Returns collected items or empty array.
+  async function checkTmuxForMenu(sendToUser = true) {
+    if (!tmuxSessionExists("pi")) return [];
+    try {
+      const items = collectMenuFromScreen("pi", { maxPresses: 20, delayMs: 80 });
+      if (items.length >= 2) {
+        currentMenuItems = items;
+        lastMenuSentAt = Date.now();
+        if (sendToUser) {
+          const s = get(process.cwd());
+          if (s.to && s.token) {
+            await mirror(formatMenuForTelegram(items), s).catch(() => {});
           }
         }
-      } catch (e) {
-        console.error("Menu monitor poll error:", e.message);
+        return items;
       }
-    };
-
-    // First check after a short delay (let Pi start processing)
-    setTimeout(poll, 1500);
-    // Then keep polling
-    menuMonitorInterval = setInterval(poll, MENU_POLL_MS);
-  }
-
-  function stopMenuMonitor() {
-    menuMonitorActive = false;
-    if (menuMonitorInterval) {
-      clearInterval(menuMonitorInterval);
-      menuMonitorInterval = null;
+    } catch (e) {
+      console.error("checkTmuxForMenu error:", e.message);
     }
+    return [];
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -533,36 +500,60 @@ export default function telegramMirror(pi) {
             sendTmuxKey("pi", "Enter");
 
             currentMenuItems = [];
-            menuSentToUser = false;
             await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
 
-            // After selection, Pi might show a new menu → restart monitor
-            setTimeout(() => startMenuMonitor(), 1500);
+            // After selection, check if Pi showed a new menu
+            setTimeout(async () => {
+              const newItems = await checkTmuxForMenu();
+              if (newItems.length === 0) {
+                // No new menu, capture the result screen
+                try {
+                  const content = captureTmuxPane("pi", 30);
+                  const preview = content.trim().slice(-500);
+                  if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
+                } catch {}
+              }
+            }, 1500);
 
             return res.end('{"ok":true}');
           }
         }
 
-        // ── Any message to Pi (slash or normal): send and start monitoring ──
-        const commandText = isSlashCommand ? translateInboundSlashCommand(trimmedBody) : null;
+        // ── Determine how to forward the message ──
+        // Registered extension commands go through pi.sendUserMessage (handled by registerCommand).
+        // Other slash commands (like /model) are TUI commands → send directly to tmux.
+        // Normal messages go to the AI agent.
+
+        const EXTENSION_COMMANDS = new Set([
+          "/clear", "/compact_session", "/abort", "/stop", "/status", "/help", "/menu"
+        ]);
+        const commandName = trimmedBody.split(/\s+/)[0].toLowerCase();
+        const isRegisteredCommand = EXTENSION_COMMANDS.has(commandName) ||
+          ["/new", "/compact"].includes(commandName);
 
         startTyping();
-        stopMenuMonitor(); // Reset any previous monitor
         currentMenuItems = [];
-        menuSentToUser = false;
 
-        if (isSlashCommand) {
+        if (isSlashCommand && !isRegisteredCommand) {
+          // TUI command (e.g. /model) → send to tmux terminal directly
+          if (tmuxSessionExists("pi")) {
+            sendTmuxText("pi", trimmedBody);
+            sendTmuxKey("pi", "Enter");
+            // Wait for Pi to process and potentially show a menu
+            setTimeout(() => checkTmuxForMenu(), 2500);
+          }
+        } else if (isSlashCommand) {
+          // Registered extension command → send through Pi's command system
+          const commandText = translateInboundSlashCommand(trimmedBody);
           await pi.sendUserMessage(commandText, {
             expandPromptTemplates: true,
             deliverAs: "followUp",
           });
         } else {
+          // Normal message → send to AI agent
           const promptText = formatReplyPrompt(message.body, message.replyTo);
           await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
         }
-
-        // Start tmux monitor to detect any menu Pi might show
-        startMenuMonitor();
 
         res.end('{"ok":true}');
       } catch (e) {
@@ -580,7 +571,6 @@ export default function telegramMirror(pi) {
 
   pi.on("session_shutdown", () => {
     stopTyping();
-    stopMenuMonitor();
     currentMenuItems = [];
     server?.close();
     server = undefined;
@@ -626,8 +616,6 @@ export default function telegramMirror(pi) {
 
   pi.on("agent_settled", () => {
     stopTyping();
-    // When agent is fully settled (response complete), stop monitoring
-    stopMenuMonitor();
   });
 
   pi.on("message_end", (event, ctx) => {
