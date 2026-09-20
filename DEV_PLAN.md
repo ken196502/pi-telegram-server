@@ -1,3 +1,57 @@
+# Development Plan: Resolve Built-in Command Conflicts in Telegram Extension
+
+## Objectives
+1. **Eliminate Extension Command Conflict Warnings**:
+   Resolve the startup warnings:
+   `Extension command '/new' conflicts with built-in interactive command. Skipping in autocomplete.`
+   `Extension command '/compact' conflicts with built-in interactive command. Skipping in autocomplete.`
+2. **Preserve Full Slash Command Functionality from Telegram**:
+   Ensure users can continue to send `/new` and `/compact` from Telegram, with identical behavior (starting a fresh session and compacting session context respectively), while having clean autocomplete and zero diagnostic warnings in interactive Pi.
+
+## Problem Statement
+1. Pi defines built-in interactive commands (`BUILTIN_SLASH_COMMANDS`) including `new` and `compact`.
+2. When `extensions/telegram-mirror.mjs` registered `pi.registerCommand("new", ...)` and `pi.registerCommand("compact", ...)`, Pi detected these names conflict with built-in interactive commands and emitted warnings in `loadedResourcesContainer`.
+3. In interactive mode, Pi's submit handler intercepts `/new` and `/compact` natively anyway, so the extension's `new` and `compact` handlers were only needed for inbound Telegram messages.
+
+## Solution Architecture
+1. **Extension Commands**:
+   - Remove registration of conflicting commands `new` and `compact` from `telegram-mirror.mjs`.
+   - Retain `/clear` (starts fresh session via `ctx.newSession()`), which has no conflict with Pi built-in commands.
+   - Register `/compact_session` (compacts context via `ctx.compact()`), avoiding collision with Pi's built-in `/compact`.
+   - Retain `/abort` and `/stop` (cancels operation via `ctx.abort()`).
+   - Retain `/status` (mirrors session, model, token usage).
+   - Register `/help` (displays bot command list).
+2. **Inbound Telegram Command Translation**:
+   - In inbound webhook listener, when a slash command is detected:
+     - Map `/new` (or `/new ...`) to `/clear`.
+     - Map `/compact` (or `/compact ...`) to `/compact_session` (preserving any arguments).
+     - Forward command to `pi.sendUserMessage` with `expandPromptTemplates: true`.
+3. **Inbound HTTP Server Resilience**:
+   - Attach `error` event listener to `server` to avoid unhandled crash if port 3094 is temporarily occupied.
+4. **Verification**:
+   - Run `npm run check` and `npm test`.
+   - Verify extension loads cleanly with zero conflict warnings.
+
+## Implementation & Verification Summary
+1. **Removed Conflicting Built-in Commands**:
+   - Removed `pi.registerCommand("new")` and `pi.registerCommand("compact")` from `extensions/telegram-mirror.mjs`.
+   - Registered `/compact_session` for session context compaction.
+   - Retained `/clear` for fresh session creation.
+   - Added `/help` command displaying available bot commands.
+2. **Inbound Slash Command Translation**:
+   - Implemented and exported `translateInboundSlashCommand` in `src/lib.mjs`.
+   - Mapped inbound `/new` -> `/clear` and `/compact` -> `/compact_session` seamlessly.
+   - Wired `translateInboundSlashCommand` into `extensions/telegram-mirror.mjs`.
+3. **Inbound Server Safeguard**:
+   - Added `error` listener on HTTP inbound listener server to prevent unhandled node error events if the port is busy.
+4. **Testing & Conflict Check**:
+   - Added 4 unit tests in `test/lib.test.mjs` covering `/new`, `/compact`, non-conflicting slash commands, and non-command text.
+   - All 33 unit tests pass (100%).
+   - `npm run check` passes with 0 syntax errors.
+   - Verified programmatic check against `BUILTIN_SLASH_COMMANDS`: 0 conflicts detected.
+
+---
+
 # Development Plan: Slash Command Forwarding and Execution via Telegram
 
 ## Objectives

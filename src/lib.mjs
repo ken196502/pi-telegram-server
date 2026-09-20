@@ -975,3 +975,23 @@ export function formatReplyPrompt(bodyText, replyInfo, options = {}) {
 
   return `${quoteHeader}\n${quoteLines}\n\n${cleanBody}`;
 }
+
+/**
+ * Translates inbound Telegram slash commands that conflict with Pi's built-in interactive commands
+ * to non-conflicting extension commands.
+ *
+ * - /new -> /clear
+ * - /compact -> /compact_session
+ */
+export function translateInboundSlashCommand(commandText) {
+  if (typeof commandText !== "string") return commandText;
+  const trimmed = commandText.trim();
+  if (!trimmed.startsWith("/")) return commandText;
+  if (trimmed === "/new" || trimmed.startsWith("/new ")) {
+    return "/clear" + trimmed.slice(4);
+  }
+  if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+    return "/compact_session" + trimmed.slice(8);
+  }
+  return trimmed;
+}

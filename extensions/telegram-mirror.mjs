@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt } from "../src/lib.mjs";
+import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, translateInboundSlashCommand } from "../src/lib.mjs";
 
 function readDotEnv(cwd) {
   const values = {};
@@ -169,21 +169,10 @@ export default function telegramMirror(pi) {
     },
   });
 
-  // Built-in slash commands accessible from Telegram and interactive mode
-  pi.registerCommand("new", {
-    description: "Start a fresh session",
-    handler: async (_args, ctx) => {
-      await ctx.waitForIdle();
-      const res = await ctx.newSession();
-      if (!res.cancelled) {
-        const s = get(process.cwd());
-        if (s.to && s.token) {
-          await mirror("✓ New session started.", s).catch(() => {});
-        }
-      }
-    },
-  });
-
+  // Slash commands accessible from Telegram and interactive mode
+  // Note: /new and /compact are built-in Pi interactive commands. To avoid conflict warnings
+  // and autocomplete skipping in Pi, we register /clear and /compact_session here, and inbound
+  // Telegram commands /new and /compact are transparently routed to them.
   pi.registerCommand("clear", {
     description: "Start a fresh session",
     handler: async (_args, ctx) => {
@@ -198,7 +187,7 @@ export default function telegramMirror(pi) {
     },
   });
 
-  pi.registerCommand("compact", {
+  pi.registerCommand("compact_session", {
     description: "Compact the session context",
     handler: async (args, ctx) => {
       await ctx.waitForIdle();
@@ -247,6 +236,24 @@ export default function telegramMirror(pi) {
       const s = get(process.cwd());
       if (s.to && s.token) {
         await mirror(statusLines.join("\n"), s).catch(() => {});
+      }
+    },
+  });
+
+  pi.registerCommand("help", {
+    description: "Show available Telegram bot commands",
+    handler: async (_args, _ctx) => {
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        const helpText = [
+          "🤖 **Available Telegram Commands:**",
+          "• `/new` or `/clear` — Start a fresh session",
+          "• `/compact [notes]` — Compact session context",
+          "• `/abort` or `/stop` — Abort current operation",
+          "• `/status` — View current model & token usage",
+          "• `/help` — Display this command list",
+        ].join("\n");
+        await mirror(helpText, s).catch(() => {});
       }
     },
   });
@@ -304,9 +311,11 @@ export default function telegramMirror(pi) {
 
         if (isSlashCommand) {
           // Slash commands (e.g. /new, /clear, /compact, /abort) must start with /
-          // Do not prefix with [Telegram id], pass expandPromptTemplates: true so Pi executes them
+          // Map commands that conflict with Pi's built-in interactive commands to their non-conflicting extension commands
+          const commandText = translateInboundSlashCommand(trimmedBody);
+
           startTyping();
-          await pi.sendUserMessage(trimmedBody, {
+          await pi.sendUserMessage(commandText, {
             expandPromptTemplates: true,
             deliverAs: "followUp",
           });
@@ -321,6 +330,10 @@ export default function telegramMirror(pi) {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
+    });
+
+    server.on("error", (err) => {
+      ctx.ui.notify(`Telegram inbound listener error: ${err.message}`, "error");
     });
 
     server.listen(s.inboundPort, s.inboundHost, () => ctx.ui.notify(`Telegram inbound listener: http://${s.inboundHost}:${s.inboundPort}${s.inboundPath}`));

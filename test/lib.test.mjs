@@ -21,6 +21,7 @@ import {
   toTelegramChatId,
   extractReplyInfo,
   formatReplyPrompt,
+  translateInboundSlashCommand,
 } from "../src/lib.mjs";
 
 describe("Telegram helpers", () => {
@@ -343,5 +344,33 @@ describe("Reply & Quote formatting", () => {
   it("returns clean body when replyInfo is missing or has no text", () => {
     assert.equal(formatReplyPrompt("Just text", null), "Just text");
     assert.equal(formatReplyPrompt("Just text", { text: "" }), "Just text");
+  });
+});
+
+describe("Inbound Slash Command Translation", () => {
+  it("translates /new to /clear to avoid built-in interactive command conflict", () => {
+    assert.equal(translateInboundSlashCommand("/new"), "/clear");
+    assert.equal(translateInboundSlashCommand("  /new  "), "/clear");
+  });
+
+  it("translates /compact to /compact_session to avoid built-in interactive command conflict", () => {
+    assert.equal(translateInboundSlashCommand("/compact"), "/compact_session");
+    assert.equal(translateInboundSlashCommand("/compact summarize context"), "/compact_session summarize context");
+  });
+
+  it("leaves non-conflicting slash commands untouched", () => {
+    assert.equal(translateInboundSlashCommand("/clear"), "/clear");
+    assert.equal(translateInboundSlashCommand("/abort"), "/abort");
+    assert.equal(translateInboundSlashCommand("/stop"), "/stop");
+    assert.equal(translateInboundSlashCommand("/status"), "/status");
+    assert.equal(translateInboundSlashCommand("/help"), "/help");
+    assert.equal(translateInboundSlashCommand("/custom args"), "/custom args");
+  });
+
+  it("leaves non-command text untouched", () => {
+    assert.equal(translateInboundSlashCommand("hello world"), "hello world");
+    assert.equal(translateInboundSlashCommand("new idea"), "new idea");
+    assert.equal(translateInboundSlashCommand(null), null);
+    assert.equal(translateInboundSlashCommand(undefined), undefined);
   });
 });
