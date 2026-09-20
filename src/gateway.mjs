@@ -235,7 +235,43 @@ async function startPolling() {
   }
 }
 function startHttp() { const server = http.createServer(async (req, res) => { const url = new URL(req.url || "/", `http://${config.host}`); if (req.method === "GET" && url.pathname === "/health") return sendJson(res, 200, { ok: true, service: "telegram", status, webhookPath: config.webhookPath, inboundEnabled: Boolean(config.inboundUrl && config.inboundToken), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), sent, received, forwarded, lastSentAt, lastReceivedAt }); if (req.method === "GET" && url.pathname === "/") return sendJson(res, 200, { ok: true, service: "telegram", endpoints: { health: "GET /health", webhook: "POST /webhook", telegramWebhook: `POST ${config.webhookPath}` } }); if (req.method === "POST" && ["/webhook", "/send", "/typing"].includes(url.pathname)) return handleOutbound(req, res); if (req.method === "POST" && url.pathname === config.webhookPath) return handleTelegramWebhook(req, res); sendJson(res, req.method === "POST" ? 404 : 405, { ok: false, error: "not found" }); }); server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port })); }
-async function start() { startHttp(); try { await telegramRequest("getMe"); if (config.polling) { await telegramRequest("deleteWebhook"); void startPolling(); } else if (config.webhookUrl) { await telegramRequest("setWebhook", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: config.webhookUrl, ...(config.webhookSecret ? { secret_token: config.webhookSecret } : {}) }) }); } status = "connected"; log("info", "Telegram Bot API connected", { mode: config.polling ? "polling" : "webhook" }); } catch (e) { status = "disconnected"; log("error", "Telegram startup failed", { error: e.message }); } }
+async function start() {
+  startHttp();
+  try {
+    await telegramRequest("getMe");
+    await telegramRequest("setMyCommands", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commands: [
+          { command: "new", description: "Start a fresh session" },
+          { command: "compact", description: "Compact session context" },
+          { command: "status", description: "Show current model & token usage" },
+          { command: "abort", description: "Abort current operation" },
+          { command: "help", description: "Show available bot commands" },
+        ],
+      }),
+    }).catch((e) => log("warn", "Failed to register Telegram bot commands", { error: e.message }));
+    if (config.polling) {
+      await telegramRequest("deleteWebhook");
+      void startPolling();
+    } else if (config.webhookUrl) {
+      await telegramRequest("setWebhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: config.webhookUrl,
+          ...(config.webhookSecret ? { secret_token: config.webhookSecret } : {}),
+        }),
+      });
+    }
+    status = "connected";
+    log("info", "Telegram Bot API connected", { mode: config.polling ? "polling" : "webhook" });
+  } catch (e) {
+    status = "disconnected";
+    log("error", "Telegram startup failed", { error: e.message });
+  }
+}
 process.on("SIGINT", () => process.exit(0)); process.on("SIGTERM", () => process.exit(0));
 await start();
 
