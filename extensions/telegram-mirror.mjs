@@ -129,10 +129,15 @@ export default function telegramMirror(pi) {
   let typingInterval = null;
   const seen = new Set();
   
-  // Menu state management
+  // Menu interception state
   let currentMenuItems = [];
-  let menuCaptureInProgress = false;
-  let lastMenuCaptureTime = 0;
+  let menuMonitorInterval = null;   // the polling interval
+  let menuMonitorActive = false;     // guard against double-start
+  let menuSentToUser = false;        // already sent a menu, waiting for selection
+  let menuInProgress = false;        // /menu command capture in progress
+  const MENU_POLL_MS = 1500;        // how often to check tmux
+  const MENU_STALE_MS = 120000;     // forget menu after 2 min
+  let lastMenuSentAt = 0;
 
   const get = (cwd) => {
     if (settings) return settings;
@@ -300,12 +305,12 @@ export default function telegramMirror(pi) {
         // Handle special commands
         if (selection === "capture" || selection === "refresh") {
           // Force menu capture with keyboard navigation (Down key)
-          menuCaptureInProgress = true;
+          menuInProgress = true;
           await mirror("🔄 Pressing Down keys to collect menu items...", s).catch(() => {});
           
           try {
             currentMenuItems = collectMenuFromScreen("pi", { maxPresses: 20, delayMs: 80 });
-            lastMenuCaptureTime = Date.now();
+            lastMenuSentAt = Date.now();
             
             if (currentMenuItems.length === 0) {
               await mirror("❌ No menu items detected. Make sure Pi is showing an interactive menu.", s).catch(() => {});
@@ -316,7 +321,7 @@ export default function telegramMirror(pi) {
           } catch (error) {
             await mirror(`❌ Menu capture failed: ${error.message}`, s).catch(() => {});
           } finally {
-            menuCaptureInProgress = false;
+            menuInProgress = false;
           }
           return;
         }
@@ -378,17 +383,17 @@ export default function telegramMirror(pi) {
       }
 
       // No args - collect menu by pressing Down keys
-      if (menuCaptureInProgress) {
+      if (menuInProgress) {
         await mirror("⏳ Menu capture already in progress...", s).catch(() => {});
         return;
       }
 
-      menuCaptureInProgress = true;
+      menuInProgress = true;
       await mirror("🔍 Collecting menu items...", s).catch(() => {});
 
       try {
         currentMenuItems = collectMenuFromScreen("pi", { maxPresses: 20, delayMs: 80 });
-        lastMenuCaptureTime = Date.now();
+        lastMenuSentAt = Date.now();
         
         if (currentMenuItems.length > 0) {
           const menuText = formatMenuForTelegram(currentMenuItems);
@@ -399,7 +404,7 @@ export default function telegramMirror(pi) {
       } catch (error) {
         await mirror(`❌ Menu capture failed: ${error.message}`, s).catch(() => {});
       } finally {
-        menuCaptureInProgress = false;
+        menuInProgress = false;
       }
     },
   });
@@ -422,6 +427,59 @@ export default function telegramMirror(pi) {
       if (s.to && s.token) {
         void sendStopTyping(s);
       }
+    }
+  }
+
+  // ── Tmux menu monitor ──────────────────────────────────────────────
+  // Continuously polls the tmux pane while Pi is processing.
+  // When a menu is detected, collects all items and sends to Telegram.
+  function startMenuMonitor() {
+    if (menuMonitorActive) return;
+    if (!tmuxSessionExists("pi")) return;
+    menuMonitorActive = true;
+    menuSentToUser = false;
+
+    const poll = () => {
+      if (!menuMonitorActive) return;
+      try {
+        if (!tmuxSessionExists("pi")) { stopMenuMonitor(); return; }
+
+        const content = captureTmuxPane("pi", 50);
+        const items = parseMenuItems(content);
+
+        if (items.length >= 2) { // at least 2 items to be a real menu
+          const itemsJson = JSON.stringify(items.map(i => i.text));
+          const prevJson = JSON.stringify(currentMenuItems.map(i => i.text));
+
+          if (itemsJson !== prevJson) {
+            // New or changed menu detected
+            currentMenuItems = items;
+            menuSentToUser = true;
+            lastMenuSentAt = Date.now();
+            stopMenuMonitor(); // Stop polling, we found a menu
+
+            const s = get(process.cwd());
+            if (s.to && s.token) {
+              void mirror(formatMenuForTelegram(items), s).catch(() => {});
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Menu monitor poll error:", e.message);
+      }
+    };
+
+    // First check after a short delay (let Pi start processing)
+    setTimeout(poll, 1500);
+    // Then keep polling
+    menuMonitorInterval = setInterval(poll, MENU_POLL_MS);
+  }
+
+  function stopMenuMonitor() {
+    menuMonitorActive = false;
+    if (menuMonitorInterval) {
+      clearInterval(menuMonitorInterval);
+      menuMonitorInterval = null;
     }
   }
 
@@ -455,75 +513,57 @@ export default function telegramMirror(pi) {
         const trimmedBody = message.body.trim();
         const isSlashCommand = /^\/[a-zA-Z]/.test(trimmedBody);
 
-        // --- Menu selection: if user sends just a number and we have a captured menu ---
+        // ── Menu selection: user sends a number while we have a captured menu ──
         const isNumberSelection = /^\d+$/.test(trimmedBody);
-        if (isNumberSelection && currentMenuItems.length > 0) {
+        if (isNumberSelection && currentMenuItems.length > 0 && (Date.now() - lastMenuSentAt) < MENU_STALE_MS) {
           const number = parseInt(trimmedBody, 10);
           const index = number - 1;
           if (index >= 0 && index < currentMenuItems.length) {
             const selectedItem = currentMenuItems[index];
-            // Navigate to the item: go to top first, then press Down index times, then Enter
+
+            // Press Escape first to make sure we're at the top of the menu
             sendTmuxKey("pi", "Escape");
-            await new Promise(r => setTimeout(r, 100));
+            await new Promise(r => setTimeout(r, 150));
+            // Navigate to the item
             for (let i = 0; i < index; i++) {
               sendTmuxKey("pi", "Down");
-              await new Promise(r => setTimeout(r, 50));
+              await new Promise(r => setTimeout(r, 60));
             }
+            // Select it
             sendTmuxKey("pi", "Enter");
-            currentMenuItems = []; // Clear after selection
+
+            currentMenuItems = [];
+            menuSentToUser = false;
             await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
 
-            // After selection, check if a new menu appeared
-            setTimeout(async () => {
-              try {
-                if (!tmuxSessionExists("pi")) return;
-                const newContent = captureTmuxPane("pi", 100);
-                const newItems = collectMenuFromScreen("pi");
-                if (newItems.length > 0) {
-                  currentMenuItems = newItems;
-                  lastMenuCaptureTime = Date.now();
-                  await mirror(formatMenuForTelegram(newItems), s).catch(() => {});
-                }
-              } catch (e) {
-                console.error("Post-selection menu check error:", e.message);
-              }
-            }, 1500);
+            // After selection, Pi might show a new menu → restart monitor
+            setTimeout(() => startMenuMonitor(), 1500);
 
             return res.end('{"ok":true}');
           }
         }
 
-        // --- Slash commands: send to Pi, then check for menu ---
+        // ── Any message to Pi (slash or normal): send and start monitoring ──
+        const commandText = isSlashCommand ? translateInboundSlashCommand(trimmedBody) : null;
+
+        startTyping();
+        stopMenuMonitor(); // Reset any previous monitor
+        currentMenuItems = [];
+        menuSentToUser = false;
+
         if (isSlashCommand) {
-          const commandText = translateInboundSlashCommand(trimmedBody);
-          startTyping();
           await pi.sendUserMessage(commandText, {
             expandPromptTemplates: true,
             deliverAs: "followUp",
           });
-
-          // Check tmux for menu after Pi processes the command
-          setTimeout(async () => {
-            try {
-              if (!tmuxSessionExists("pi")) return;
-              const items = collectMenuFromScreen("pi");
-              if (items.length > 0) {
-                currentMenuItems = items;
-                lastMenuCaptureTime = Date.now();
-                await mirror(formatMenuForTelegram(items), s).catch(() => {});
-              }
-            } catch (e) {
-              console.error("Post-command menu check error:", e.message);
-            }
-          }, 2000);
-
-          return res.end('{"ok":true}');
+        } else {
+          const promptText = formatReplyPrompt(message.body, message.replyTo);
+          await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
         }
 
-        // --- Normal messages: send to Pi directly, no menu detection ---
-        startTyping();
-        const promptText = formatReplyPrompt(message.body, message.replyTo);
-        await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
+        // Start tmux monitor to detect any menu Pi might show
+        startMenuMonitor();
+
         res.end('{"ok":true}');
       } catch (e) {
         res.writeHead(400, { "content-type": "application/json" });
@@ -540,6 +580,8 @@ export default function telegramMirror(pi) {
 
   pi.on("session_shutdown", () => {
     stopTyping();
+    stopMenuMonitor();
+    currentMenuItems = [];
     server?.close();
     server = undefined;
   });
@@ -578,10 +620,14 @@ export default function telegramMirror(pi) {
 
   pi.on("agent_end", () => {
     stopTyping();
+    // Don't stop menu monitor here - menu might still be on screen
+    // The monitor will stop itself when it detects a menu or times out
   });
 
   pi.on("agent_settled", () => {
     stopTyping();
+    // When agent is fully settled (response complete), stop monitoring
+    stopMenuMonitor();
   });
 
   pi.on("message_end", (event, ctx) => {
