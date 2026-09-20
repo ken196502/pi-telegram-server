@@ -72,7 +72,7 @@ export function parseMenuItems(content) {
   // Common menu patterns
   const patterns = [
     // Numbered list: "1. Option", "1) Option", "1: Option"
-    /^\s*(\d+)[.):\s]+(.+)$/,
+    /^\s*(\d+)[.):\s]+(.+)$/, 
     // Arrow indicator: "► Option", "▸ Option", "→ Option", "> Option"
     /^\s*[►▸→>]\s*(.+)$/,
     // Selection markers: "[x] Option", "[ ] Option", "* Option"
@@ -390,6 +390,53 @@ export async function handleMenuSelection(sessionName, selection) {
   };
 }
 
+/**
+ * Collect all menu items from a tmux screen by pressing Down repeatedly.
+ * This is the main function for the Telegram menu interception flow:
+ * 1. Capture screen, parse items
+ * 2. Press Down, capture again, parse more
+ * 3. Deduplicate by text
+ * 4. Repeat until no new items appear
+ * @param {string} sessionName - tmux session name
+ * @param {object} options
+ * @param {number} options.maxPresses - max Down presses (default 30)
+ * @param {number} options.delayMs - delay between presses (default 80)
+ * @returns {Array<{index: number, text: string, selected: boolean}>} collected menu items
+ */
+export function collectMenuFromScreen(sessionName = "pi", options = {}) {
+  const { maxPresses = 30, delayMs = 80 } = options;
+  const allItems = new Map(); // text -> item, for dedup
+
+  // First capture: current screen
+  let content = captureTmuxPane(sessionName, 50);
+  let items = parseMenuItems(content);
+  for (const item of items) allItems.set(item.text, item);
+
+  if (allItems.size === 0) return []; // No menu on screen
+
+  // Keep pressing Down and collecting new items
+  let staleCount = 0;
+  for (let press = 0; press < maxPresses; press++) {
+    sendTmuxKey(sessionName, "Down");
+    execSync(`sleep ${delayMs / 1000}`);
+
+    content = captureTmuxPane(sessionName, 50);
+    items = parseMenuItems(content);
+
+    const sizeBefore = allItems.size;
+    for (const item of items) allItems.set(item.text, item);
+
+    if (allItems.size === sizeBefore) {
+      staleCount++;
+      if (staleCount >= 3) break; // No new items for 3 presses, done
+    } else {
+      staleCount = 0;
+    }
+  }
+
+  return Array.from(allItems.values());
+}
+
 export default {
   tmuxSessionExists,
   captureTmuxPane,
@@ -398,6 +445,7 @@ export default {
   parseMenuItems,
   detectMenu,
   captureMenuByNavigation,
+  collectMenuFromScreen,
   formatMenuForTelegram,
   findMenuItemIndex,
   selectMenuItem,

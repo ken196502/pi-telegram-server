@@ -7,9 +7,11 @@ import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPromp
 import { 
   tmuxSessionExists, 
   captureTmuxPane, 
+  sendTmuxKey,
   parseMenuItems, 
   detectMenu, 
   captureMenuByNavigation, 
+  collectMenuFromScreen,
   formatMenuForTelegram, 
   findMenuItemIndex, 
   selectMenuItem,
@@ -297,12 +299,12 @@ export default function telegramMirror(pi) {
         
         // Handle special commands
         if (selection === "capture" || selection === "refresh") {
-          // Force menu capture with navigation
+          // Force menu capture with keyboard navigation (Down key)
           menuCaptureInProgress = true;
-          await mirror("🔄 Capturing menu with navigation...", s).catch(() => {});
+          await mirror("🔄 Pressing Down keys to collect menu items...", s).catch(() => {});
           
           try {
-            currentMenuItems = captureMenuByNavigation("pi", { maxAttempts: 15, delayMs: 100 });
+            currentMenuItems = collectMenuFromScreen("pi", { maxPresses: 20, delayMs: 80 });
             lastMenuCaptureTime = Date.now();
             
             if (currentMenuItems.length === 0) {
@@ -375,44 +377,24 @@ export default function telegramMirror(pi) {
         return;
       }
 
-      // No args - capture current menu
+      // No args - collect menu by pressing Down keys
       if (menuCaptureInProgress) {
         await mirror("⏳ Menu capture already in progress...", s).catch(() => {});
         return;
       }
 
       menuCaptureInProgress = true;
-      await mirror("🔍 Detecting menu...", s).catch(() => {});
+      await mirror("🔍 Collecting menu items...", s).catch(() => {});
 
       try {
-        // First, try to capture current screen
-        const content = captureTmuxPane("pi", 100);
-        const menuDetection = detectMenu(content);
+        currentMenuItems = collectMenuFromScreen("pi", { maxPresses: 20, delayMs: 80 });
+        lastMenuCaptureTime = Date.now();
         
-        if (menuDetection.isMenu && menuDetection.confidence >= 50) {
-          // Menu detected, parse it
-          currentMenuItems = parseMenuItems(content);
-          lastMenuCaptureTime = Date.now();
-          
-          if (currentMenuItems.length > 0) {
-            const menuText = formatMenuForTelegram(currentMenuItems);
-            await mirror(menuText, s).catch(() => {});
-          } else {
-            await mirror("🔍 Menu detected but no items could be parsed. Try `/menu capture` to navigate through the menu.", s).catch(() => {});
-          }
+        if (currentMenuItems.length > 0) {
+          const menuText = formatMenuForTelegram(currentMenuItems);
+          await mirror(menuText, s).catch(() => {});
         } else {
-          // No obvious menu, try navigation capture
-          await mirror("🔍 No obvious menu detected. Attempting navigation capture...", s).catch(() => {});
-          
-          currentMenuItems = captureMenuByNavigation("pi", { maxAttempts: 10, delayMs: 100 });
-          lastMenuCaptureTime = Date.now();
-          
-          if (currentMenuItems.length > 0) {
-            const menuText = formatMenuForTelegram(currentMenuItems);
-            await mirror(menuText, s).catch(() => {});
-          } else {
-            await mirror("❌ No menu items found. Make sure Pi is showing an interactive menu, or try `/menu capture` to force navigation.", s).catch(() => {});
-          }
+          await mirror("❌ No menu items found. Make sure Pi is showing an interactive menu, or try `/menu capture` to force navigation.", s).catch(() => {});
         }
       } catch (error) {
         await mirror(`❌ Menu capture failed: ${error.message}`, s).catch(() => {});
@@ -471,21 +453,74 @@ export default function telegramMirror(pi) {
         if (!message.body?.trim()) throw new Error("body is required");
 
         const trimmedBody = message.body.trim();
-        const isSlashCommand = trimmedBody.startsWith("/");
+        const isSlashCommand = /^\/[a-zA-Z]/.test(trimmedBody);
 
+        // --- Menu selection: if user sends just a number and we have a captured menu ---
+        const isNumberSelection = /^\d+$/.test(trimmedBody);
+        if (isNumberSelection && currentMenuItems.length > 0) {
+          const number = parseInt(trimmedBody, 10);
+          const index = number - 1;
+          if (index >= 0 && index < currentMenuItems.length) {
+            const selectedItem = currentMenuItems[index];
+            // Navigate to the item: go to top first, then press Down index times, then Enter
+            sendTmuxKey("pi", "Escape");
+            await new Promise(r => setTimeout(r, 100));
+            for (let i = 0; i < index; i++) {
+              sendTmuxKey("pi", "Down");
+              await new Promise(r => setTimeout(r, 50));
+            }
+            sendTmuxKey("pi", "Enter");
+            currentMenuItems = []; // Clear after selection
+            await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
+
+            // After selection, check if a new menu appeared
+            setTimeout(async () => {
+              try {
+                if (!tmuxSessionExists("pi")) return;
+                const newContent = captureTmuxPane("pi", 100);
+                const newItems = collectMenuFromScreen("pi");
+                if (newItems.length > 0) {
+                  currentMenuItems = newItems;
+                  lastMenuCaptureTime = Date.now();
+                  await mirror(formatMenuForTelegram(newItems), s).catch(() => {});
+                }
+              } catch (e) {
+                console.error("Post-selection menu check error:", e.message);
+              }
+            }, 1500);
+
+            return res.end('{"ok":true}');
+          }
+        }
+
+        // --- Slash commands: send to Pi, then check for menu ---
         if (isSlashCommand) {
-          // Slash commands (e.g. /new, /clear, /compact, /abort) must start with /
-          // Map commands that conflict with Pi's built-in interactive commands to their non-conflicting extension commands
           const commandText = translateInboundSlashCommand(trimmedBody);
-
           startTyping();
           await pi.sendUserMessage(commandText, {
             expandPromptTemplates: true,
             deliverAs: "followUp",
           });
+
+          // Check tmux for menu after Pi processes the command
+          setTimeout(async () => {
+            try {
+              if (!tmuxSessionExists("pi")) return;
+              const items = collectMenuFromScreen("pi");
+              if (items.length > 0) {
+                currentMenuItems = items;
+                lastMenuCaptureTime = Date.now();
+                await mirror(formatMenuForTelegram(items), s).catch(() => {});
+              }
+            } catch (e) {
+              console.error("Post-command menu check error:", e.message);
+            }
+          }, 2000);
+
           return res.end('{"ok":true}');
         }
 
+        // --- Normal messages: send to Pi directly, no menu detection ---
         startTyping();
         const promptText = formatReplyPrompt(message.body, message.replyTo);
         await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
