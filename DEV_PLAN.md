@@ -1,3 +1,48 @@
+# Development Plan: Slash Command Forwarding and Execution via Telegram
+
+## Objectives
+1. **Slash Command Execution Support from Telegram**:
+   When users send slash commands (e.g. `/new`, `/clear`, `/compact`, `/abort`, `/help`, `/status`) from Telegram, execute them natively as commands in Pi rather than prefixing them with `[Telegram id]` and sending them as regular prompt text to the LLM.
+2. **Built-in Session Management Commands**:
+   Register `/new`, `/clear`, `/compact`, `/abort`, `/status`, and `/help` as extension commands in `telegram-mirror.mjs`, enabling remote session creation (`ctx.newSession()`), compaction (`ctx.compact()`), and execution aborts from Telegram.
+
+## Problem Statement
+1. In `extensions/telegram-mirror.mjs`, all inbound messages were unconditionally wrapped with:
+   `[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`.
+2. Because the message started with `[Telegram ...]` rather than `/`, Pi's command parser never identified it as a command.
+3. Furthermore, `expandPromptTemplates: true` was not passed in `pi.sendUserMessage`, which prevented extension commands and skill commands from executing.
+4. Additionally, interactive TUI commands like `/new` are handled in `interactive-mode.js` on editor submit and were not registered in Pi's `_extensionRunner`, so they could not be triggered programmatically without explicit command registration.
+
+## Solution Architecture
+1. **Command Registration in `extensions/telegram-mirror.mjs`**:
+   - Register `new` and `clear`: awaits idle, calls `ctx.newSession()`, and notifies user via Telegram `✓ New session started.`.
+   - Register `compact`: awaits idle, calls `ctx.compact()`, and notifies user via Telegram `✓ Compaction started.`.
+   - Register `abort` / `stop`: calls `ctx.abort()` and notifies user `⏹ Operation aborted.`.
+   - Register `status`: reports session name, active model, and token usage to Telegram.
+   - Register `help`: lists available bot commands.
+2. **Inbound Message Routing**:
+   - Check if `trimmedBody.startsWith("/")`.
+   - If true: send directly to `pi.sendUserMessage(trimmedBody, { expandPromptTemplates: true, deliverAs: "followUp" })` without prepending `[Telegram ...]`.
+   - If false: format with `formatReplyPrompt` and prepend `[Telegram ...]`.
+3. **Verification**:
+   - Syntax check (`npm run check`) and unit tests (`npm test`).
+
+## Implementation & Verification Summary
+1. **Slash Command Detection & Dispatch**:
+   - In `extensions/telegram-mirror.mjs`: Added check `trimmedBody.startsWith("/")`.
+   - When a slash command is sent from Telegram, dispatches directly via `pi.sendUserMessage(trimmedBody, { expandPromptTemplates: true, deliverAs: "followUp" })` without prepending `[Telegram ...]`.
+   - Normal chat messages continue to be formatted with `[Telegram ${senderId}]\n${promptText}` and Markdown reply blockquotes.
+2. **Registered Commands in Extension**:
+   - Registered `/new` and `/clear`: calls `ctx.newSession()` and mirrors `✓ New session started.` to Telegram.
+   - Registered `/compact`: calls `ctx.compact()` and mirrors `✓ Context compaction initiated.` to Telegram.
+   - Registered `/abort` and `/stop`: calls `ctx.abort()` and mirrors `⏹ Operation aborted.` to Telegram.
+   - Registered `/status`: mirrors current model, session, and context tokens to Telegram.
+3. **Prevented EADDRINUSE on Session Switches**:
+   - In `session_start`: ensures previous HTTP listener is closed before re-binding to port 3094.
+4. **All 29 tests pass (100%) and `npm run check` passes with 0 errors**.
+
+---
+
 # Development Plan: Reply & Quoted Message Forwarding to Pi
 
 ## Objectives

@@ -169,6 +169,88 @@ export default function telegramMirror(pi) {
     },
   });
 
+  // Built-in slash commands accessible from Telegram and interactive mode
+  pi.registerCommand("new", {
+    description: "Start a fresh session",
+    handler: async (_args, ctx) => {
+      await ctx.waitForIdle();
+      const res = await ctx.newSession();
+      if (!res.cancelled) {
+        const s = get(process.cwd());
+        if (s.to && s.token) {
+          await mirror("✓ New session started.", s).catch(() => {});
+        }
+      }
+    },
+  });
+
+  pi.registerCommand("clear", {
+    description: "Start a fresh session",
+    handler: async (_args, ctx) => {
+      await ctx.waitForIdle();
+      const res = await ctx.newSession();
+      if (!res.cancelled) {
+        const s = get(process.cwd());
+        if (s.to && s.token) {
+          await mirror("✓ New session started.", s).catch(() => {});
+        }
+      }
+    },
+  });
+
+  pi.registerCommand("compact", {
+    description: "Compact the session context",
+    handler: async (args, ctx) => {
+      await ctx.waitForIdle();
+      ctx.compact({ customInstructions: args ? args.trim() : undefined });
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        await mirror("✓ Context compaction initiated.", s).catch(() => {});
+      }
+    },
+  });
+
+  pi.registerCommand("abort", {
+    description: "Abort the currently running agent operation",
+    handler: async (_args, ctx) => {
+      ctx.abort();
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        await mirror("⏹ Operation aborted.", s).catch(() => {});
+      }
+    },
+  });
+
+  pi.registerCommand("stop", {
+    description: "Alias for /abort",
+    handler: async (_args, ctx) => {
+      ctx.abort();
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        await mirror("⏹ Operation aborted.", s).catch(() => {});
+      }
+    },
+  });
+
+  pi.registerCommand("status", {
+    description: "Show current Pi status",
+    handler: async (_args, ctx) => {
+      const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unknown";
+      const usage = ctx.getContextUsage?.();
+      const sessionName = ctx.sessionManager?.getSessionName?.() || "default";
+      const statusLines = [
+        "📊 **Pi Session Status:**",
+        `• Session: \`${sessionName}\``,
+        `• Model: \`${model}\``,
+        usage ? `• Context Tokens: \`${usage.totalTokens || 0}\` / \`${usage.contextWindow || 0}\`` : "",
+      ].filter(Boolean);
+      const s = get(process.cwd());
+      if (s.to && s.token) {
+        await mirror(statusLines.join("\n"), s).catch(() => {});
+      }
+    },
+  });
+
   function startTyping() {
     const s = get(process.cwd());
     if (!s.to || !s.token) return;
@@ -194,6 +276,11 @@ export default function telegramMirror(pi) {
     const s = get(ctx.cwd);
     if (!s.inboundToken) return ctx.ui.notify("Telegram inbound is disabled: set PI_TELEGRAM_INBOUND_TOKEN or INBOUND_WEBHOOK_TOKEN", "warning");
 
+    if (server) {
+      try { server.close(); } catch {}
+      server = undefined;
+    }
+
     server = http.createServer(async (req, res) => {
       const url = new URL(req.url || "/", `http://${s.inboundHost}`);
       if (req.method !== "POST" || url.pathname !== s.inboundPath) {
@@ -211,6 +298,21 @@ export default function telegramMirror(pi) {
         if (message.messageId && seen.has(message.messageId)) return res.end('{"ok":true}');
         if (message.messageId) seen.add(message.messageId);
         if (!message.body?.trim()) throw new Error("body is required");
+
+        const trimmedBody = message.body.trim();
+        const isSlashCommand = trimmedBody.startsWith("/");
+
+        if (isSlashCommand) {
+          // Slash commands (e.g. /new, /clear, /compact, /abort) must start with /
+          // Do not prefix with [Telegram id], pass expandPromptTemplates: true so Pi executes them
+          startTyping();
+          await pi.sendUserMessage(trimmedBody, {
+            expandPromptTemplates: true,
+            deliverAs: "followUp",
+          });
+          return res.end('{"ok":true}');
+        }
+
         startTyping();
         const promptText = formatReplyPrompt(message.body, message.replyTo);
         await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
