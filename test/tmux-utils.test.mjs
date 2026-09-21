@@ -78,6 +78,29 @@ $ command`;
       const items = parseMenuItems(content);
       assert.equal(items.length, 0);
     });
+
+    it("should reject conversational numbered lists with prose/code descriptions", () => {
+      const content = `Testing flow-ext project --list option flag and extension project extraction...
+1. --
+2. Testing flow-ext project --list option flag and extension project extraction...
+3. Flow 扩展端 (extension/content.js)：
+4. 添加 extractProjectsFromDOM()：利用 UUID 正则解析页面中所有的 /project/<uuid> 链接及卡片属性（data-project-id、aria-label 等），去重并提取项目 ID、标题与完整 URL。
+5. 抽象 scrollToBottomInternal()：实现平滑分步滚动并监控页面高度与各滚动容器变化，在停滞或达到上限后触底等待懒加载挂载。
+$ git status
+── ⠴ Working ─────────────────────────`;
+      const items = parseMenuItems(content);
+      assert.equal(items.length, 0);
+    });
+
+    it("should return empty array when screen shows agent Working status", () => {
+      const content = `Model Configuration
+→ ✓ mimo-v2.5-pro [commandcode]
+  ✓ gpt-4o [openai]
+── ⠴ Working ─────────────────────────
+/mnt/share/VM`;
+      const items = parseMenuItems(content);
+      assert.equal(items.length, 0);
+    });
   });
 
   describe("detectMenu", () => {
@@ -108,6 +131,15 @@ $ command`;
       const result = detectMenu(content);
       assert.equal(result.isMenu, true);
     });
+
+    it("should reject screen with Working status", () => {
+      const content = `Select an option:
+1. Option 1
+2. Option 2
+── ⠴ Working ─────────────────────────`;
+      const result = detectMenu(content);
+      assert.equal(result.isMenu, false);
+    });
   });
 
   describe("formatMenuForTelegram", () => {
@@ -127,6 +159,18 @@ $ command`;
     it("should handle empty items", () => {
       const formatted = formatMenuForTelegram([]);
       assert.ok(formatted.includes("No menu items"));
+    });
+
+    it("should format all items without truncation even when >30 items", () => {
+      const items = Array.from({ length: 85 }, (_, i) => ({
+        text: `Model-${i + 1}`,
+        selected: i === 0,
+      }));
+      const formatted = formatMenuForTelegram(items, "Models");
+      assert.ok(formatted.includes("Total: 85 items"));
+      assert.ok(formatted.includes("✅ Model-1"));
+      assert.ok(formatted.includes("85. Model-85"));
+      assert.ok(!formatted.includes("more items"));
     });
   });
 

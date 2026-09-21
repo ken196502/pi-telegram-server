@@ -22,6 +22,7 @@ import {
   extractReplyInfo,
   formatReplyPrompt,
   translateInboundSlashCommand,
+  isRedundantName,
 } from "../src/lib.mjs";
 
 describe("Telegram helpers", () => {
@@ -372,5 +373,22 @@ describe("Inbound Slash Command Translation", () => {
     assert.equal(translateInboundSlashCommand("new idea"), "new idea");
     assert.equal(translateInboundSlashCommand(null), null);
     assert.equal(translateInboundSlashCommand(undefined), undefined);
+  });
+});
+
+describe("Model Name Redundancy Check", () => {
+  it("identifies redundant model names correctly", () => {
+    assert.equal(isRedundantName("Gemini 3.8 Flash (Antigravity)", "gemini-3.8-flash", "antigravity"), true);
+    assert.equal(isRedundantName("Gemini 3.8 Flash", "gemini-3.8-flash", "google"), true);
+    assert.equal(isRedundantName("Claude Opus 4.6 (Antigravity)", "claude-opus-4-6", "antigravity"), true);
+    assert.equal(isRedundantName("GPT-4o (OpenAI)", "gpt-4o", "openai"), true);
+    assert.equal(isRedundantName("gpt-4o", "gpt-4o", "openai"), true);
+    assert.equal(isRedundantName("", "gpt-4o", "openai"), true);
+    assert.equal(isRedundantName(null, "gpt-4o", "openai"), true);
+  });
+
+  it("preserves non-redundant custom model names", () => {
+    assert.equal(isRedundantName("Coding Specialist Llama", "llama-3-8b", "ollama"), false);
+    assert.equal(isRedundantName("Production Reasoning Agent", "deepseek-r1-distill", "local"), false);
   });
 });

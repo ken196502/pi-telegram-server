@@ -995,3 +995,25 @@ export function translateInboundSlashCommand(commandText) {
   }
   return trimmed;
 }
+
+/**
+ * Checks if a model's display name is redundant with its ID and provider.
+ * E.g. name: "Gemini 3.8 Flash (Antigravity)", id: "gemini-3.8-flash", provider: "antigravity" -> true
+ */
+export function isRedundantName(name, id, provider = "") {
+  if (!name || typeof name !== "string") return true;
+  const clean = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const cleanName = clean(name);
+  const cleanId = clean(id);
+  const cleanProv = clean(provider);
+
+  if (!cleanName || cleanName === cleanId) return true;
+  if (cleanProv) {
+    if (cleanName === cleanId + cleanProv || cleanName === cleanProv + cleanId) return true;
+    const strippedName = cleanName.replace(cleanProv, "");
+    const strippedId = cleanId.replace(cleanProv, "");
+    if (strippedName === strippedId) return true;
+  }
+  return false;
+}
+

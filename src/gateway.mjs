@@ -246,8 +246,11 @@ async function start() {
         commands: [
           { command: "new", description: "Start a fresh session" },
           { command: "compact", description: "Compact session context" },
+          { command: "model", description: "Select or switch AI model" },
           { command: "status", description: "Show current model & token usage" },
           { command: "abort", description: "Abort current operation" },
+          { command: "menu", description: "Interact with active terminal menu" },
+          { command: "commands", description: "List all Pi slash commands" },
           { command: "help", description: "Show available bot commands" },
         ],
       }),
