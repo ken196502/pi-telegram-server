@@ -216,8 +216,8 @@ export function formatMarkdownTable(tableLines, options = {}) {
 }
 
 export function renderHtmlTableDocument(markdownTable, options = {}) {
-  const title = options.title || "数据表格";
-  const desc = options.description || "已冻结表头与首列，支持横向和纵向流畅滚动";
+  const title = options.title || "Table";
+  const desc = options.description || "";
   const lines = (Array.isArray(markdownTable) ? markdownTable : String(markdownTable || "").trim().split(/\r?\n/))
     .map((l) => l.trim())
     .filter((l) => l.includes("|"));
@@ -304,7 +304,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       border-collapse: separate;
       border-spacing: 0;
       width: 100%;
-      font-size: 0.88rem;
+      font-size: 0.8rem;
       white-space: nowrap;
     }
     th {
@@ -314,7 +314,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       background: #182234;
       color: var(--text-muted);
       font-weight: 600;
-      padding: 12px 16px;
+      padding: 10px 16px;
       border-bottom: 2px solid var(--border);
     }
     th:first-child {
@@ -326,7 +326,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
     }
     td {
-      padding: 11px 16px;
+      padding: 9px 16px;
       border-bottom: 1px solid var(--border);
       color: var(--text);
     }
@@ -433,8 +433,8 @@ export function exportMarkdownTablesToHtmlFile(text, options = {}) {
 
   const targetTable = tables[0];
   const htmlContent = renderHtmlTableDocument(targetTable.tableMd, {
-    title: options.title || targetTable.title || "数据表格",
-    description: options.description || "已冻结表头与首列，支持横向和纵向流畅滚动",
+    title: options.title || targetTable.title || "Table",
+    description: options.description || "",
   });
 
   const outDir = options.outputDir || "/tmp";

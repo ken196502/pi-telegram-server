@@ -889,7 +889,7 @@ export default function telegramMirror(pi) {
             fileName: `${titleSlug}-${Date.now()}.html`,
           });
           if (htmlFile) {
-            void sendFile(htmlFile, s, `📊 ${t.title || "数据表格"}（已冻结表头与首列）`).catch((e) =>
+            void sendFile(htmlFile, s, `📊 ${t.title || "Table"}`).catch((e) =>
               ctx.ui.notify(`Telegram table export failed: ${e.message}`, "error")
             );
           }
