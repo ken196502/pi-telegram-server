@@ -304,7 +304,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       border-collapse: separate;
       border-spacing: 0;
       width: 100%;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       white-space: nowrap;
     }
     th {
@@ -316,6 +316,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       font-weight: 600;
       padding: 10px 16px;
       border-bottom: 2px solid var(--border);
+      max-width: 70vw;
     }
     th:first-child {
       position: sticky;
@@ -330,11 +331,13 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       white-space: normal;
       word-wrap: break-word;
       overflow-wrap: break-word;
+      font-size: 0.8rem;
     }
     td {
       padding: 9px 16px;
       border-bottom: 1px solid var(--border);
       color: var(--text);
+      max-width: 70vw;
     }
     td:first-child {
       position: sticky;
@@ -349,6 +352,7 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       white-space: normal;
       word-wrap: break-word;
       overflow-wrap: break-word;
+      font-size: 0.8rem;
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: var(--row-hover); }
