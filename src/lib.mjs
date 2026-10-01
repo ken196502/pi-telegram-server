@@ -324,6 +324,12 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       z-index: 4;
       background: #182234;
       box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
+      max-width: 20vw;
+      min-width: 20vw;
+      width: 20vw;
+      white-space: normal;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
     }
     td {
       padding: 9px 16px;
@@ -337,6 +343,12 @@ export function renderHtmlTableDocument(markdownTable, options = {}) {
       background: var(--card-bg);
       font-weight: 500;
       box-shadow: 2px 0 6px rgba(0, 0, 0, 0.35);
+      max-width: 20vw;
+      min-width: 20vw;
+      width: 20vw;
+      white-space: normal;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: var(--row-hover); }
