@@ -52,6 +52,14 @@ function textOf(message) {
   return message.content.filter((p) => p?.type === "text").map((p) => p.text || "").join("").trim();
 }
 
+function errorOf(message) {
+  if (message?.role !== "assistant") return "";
+  if (typeof message.errorMessage === "string" && message.errorMessage.trim()) {
+    return `❌ Pi error:\n${message.errorMessage.trim()}`;
+  }
+  return message.stopReason === "error" ? "❌ Pi error: Unknown error (no details provided)." : "";
+}
+
 function extractFilePaths(text) {
   const paths = [];
   const regex = /(?:^|\s)(\/[^\s]+\.(?:pdf|doc|docx|txt|csv|json|xml|html|md|zip|tar|gz|png|jpg|jpeg|gif|mp3|mp4|wav|py|js|ts|sh|bash|log))/gmi;
@@ -863,11 +871,12 @@ export default function telegramMirror(pi) {
     stopTyping();
   });
 
-  pi.on("message_end", (event, ctx) => {
+  pi.on("message_end", async (event, ctx) => {
     if (ctx) latestCtx = ctx;
     const message = textOf(event.message);
+    const error = errorOf(event.message);
     const s = get(ctx.cwd);
-    if (!message) return;
+    if (!message && !error) return;
     stopTyping();
     if (!s.to || !s.token) return ctx.ui.notify("Telegram mirror is not configured: set PI_TELEGRAM_TO and PI_TELEGRAM_WEBHOOK_TOKEN", "warning");
 
@@ -897,7 +906,8 @@ export default function telegramMirror(pi) {
       }
     } catch {}
 
-    void mirror(message, s).catch((e) => ctx.ui.notify(`Telegram mirror failed: ${e.message}`, "error"));
+    // Provider errors live outside content; preserve partial output and the full error.
+    await mirror([message, error].filter(Boolean).join("\n\n"), s).catch((e) => ctx.ui.notify(`Telegram mirror failed: ${e.message}`, "error"));
   });
 }
 
