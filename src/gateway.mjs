@@ -35,7 +35,12 @@ const api = (method) => `${config.apiBase}/bot${config.token}/${method}`;
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
 const proxyAgent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 const isLocalUrl = (url) => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1])(:|\/)/i.test(url);
-const proxyFetch = (url, opts) => proxyAgent && !isLocalUrl(url) ? undiciFetch(url, { ...opts, dispatcher: proxyAgent }) : fetch(url, opts);
+// Always use the undici package's fetch, which matches the UndiciFormData/ProxyAgent instances
+// imported above. Node 24's global fetch no longer recognises a standalone-undici FormData and
+// silently serialises it as text/plain ("[object FormData]"), which made Telegram reject uploads
+// with "Bad Request: there is no document in the request". Attach the proxy dispatcher only when
+// a proxy is configured and the target is not local.
+const proxyFetch = (url, opts) => undiciFetch(url, proxyAgent && !isLocalUrl(url) ? { ...opts, dispatcher: proxyAgent } : opts);
 function log(level, message, fields = {}) { const suffix = Object.keys(fields).length ? ` ${JSON.stringify(fields)}` : ""; process.stderr.write(`${new Date().toISOString()} ${level} ${message}${suffix}\n`); }
 function sendJson(res, code, body) { const payload = JSON.stringify(body); res.writeHead(code, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(payload) }); res.end(payload); }
 function readJson(req) { return new Promise((resolve, reject) => { let body = "", size = 0; req.setEncoding("utf8"); req.on("data", (chunk) => { size += Buffer.byteLength(chunk); if (size > 1024 * 1024) { reject(new Error("request body is too large")); req.destroy(); return; } body += chunk; }); req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch { reject(new Error("request body must be valid JSON")); } }); req.on("error", reject); }); }
@@ -126,7 +131,7 @@ async function sendDocument(to, filePath, fileName, mimetype, caption) {
   try { fs.accessSync(resolved, fs.constants.R_OK); } catch { throw new Error("filePath is not readable"); }
   const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : path.basename(resolved);
   const type = typeof mimetype === "string" && mimetype.trim() ? mimetype.trim() : guessMimeType(name);
-  const form = new UndiciFormData(); form.append("chat_id", chatId); form.append("document", new Blob([fs.readFileSync(resolved)], { type }), name);
+  const form = new UndiciFormData(); form.append("chat_id", chatId); form.append("document", new File([fs.readFileSync(resolved)], name, { type }));
   if (typeof caption === "string" && caption.trim()) form.append("caption", caption.trim());
   const result = await telegramRequest("sendDocument", { method: "POST", body: form }); sent += 1; lastSentAt = new Date().toISOString();
   return { to: chatId, messageIds: result?.message_id ? [result.message_id] : [], fileName: name, mimetype: type };
