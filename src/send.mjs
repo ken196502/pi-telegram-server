@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "./lib.mjs";
 loadEnvFile(path.resolve(".env"));
-function usage() { return "Usage: npm run send -- --to <chat-id-or-@username> [--message <text>] [--file <local-path>] [--json <json-or-file>]\n\nEnvironment:\n  PI_TELEGRAM_WEBHOOK_URL or TELEGRAM_WEBHOOK_URL  webhook URL\n  PI_TELEGRAM_WEBHOOK_TOKEN or WEBHOOK_TOKEN        webhook token\n  TELEGRAM_TO                                      default recipient"; }
-function parseArgs(args) { const options = {}; for (let i = 0; i < args.length; i += 1) { const arg = args[i]; if (arg === "--help" || arg === "-h") return { help: true }; if (!["--to", "--message", "--file", "--file-name", "--mime-type", "--url", "--json"].includes(arg)) throw new Error(`unknown option: ${arg}`); const value = args[++i]; if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`); options[arg.slice(2)] = value; } return options; }
+function usage() { return "Usage: npm run send -- --to <chat-id-or-@username> [--bot <name>] [--message <text>] [--file <local-path>] [--json <json-or-file>]\n\nEnvironment:\n  PI_TELEGRAM_WEBHOOK_URL or TELEGRAM_WEBHOOK_URL  webhook URL\n  PI_TELEGRAM_WEBHOOK_TOKEN or WEBHOOK_TOKEN        webhook token\n  PI_TELEGRAM_BOT or TELEGRAM_BOT                  default bot name\n  TELEGRAM_TO                                      default recipient"; }
+function parseArgs(args) { const options = {}; for (let i = 0; i < args.length; i += 1) { const arg = args[i]; if (arg === "--help" || arg === "-h") return { help: true }; if (!["--to", "--bot", "--message", "--file", "--file-name", "--mime-type", "--url", "--json"].includes(arg)) throw new Error(`unknown option: ${arg}`); const value = args[++i]; if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`); options[arg.slice(2)] = value; } return options; }
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) return console.log(usage());
@@ -16,7 +16,9 @@ async function main() {
   if (!token) throw new Error("PI_TELEGRAM_WEBHOOK_TOKEN or WEBHOOK_TOKEN is required");
   if (!to) throw new Error(`--to or TELEGRAM_TO is required\n\n${usage()}`);
   if (!options.message?.trim() && !options.file && !options.json) throw new Error(`--message, --file, or --json is required\n\n${usage()}`);
+  const bot = options.bot || process.env.PI_TELEGRAM_BOT || process.env.TELEGRAM_BOT || "";
   const payload = { to, message: options.message || "" };
+  if (bot) payload.bot = bot;
   if (options.file) payload.filePath = options.file;
   if (options["file-name"]) payload.fileName = options["file-name"];
   if (options["mime-type"]) payload.mimetype = options["mime-type"];

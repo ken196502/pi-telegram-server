@@ -15,6 +15,25 @@ Create a bot with BotFather and set `TELEGRAM_BOT_TOKEN` and a random `WEBHOOK_T
 npm start
 ```
 
+## Multiple bots
+
+One gateway process can serve several bots. List them in `TELEGRAM_BOTS` as `name=token` pairs (or `name:token`), keeping `WEBHOOK_TOKEN` as the single local API token:
+
+```bash
+TELEGRAM_BOTS=alpha=123456:token-a,beta=654321:token-b
+TELEGRAM_WEBHOOK_URL=https://bot.example.com/telegram/webhook
+```
+
+Each bot gets its own webhook path (`/telegram/webhook/alpha`, `/telegram/webhook/beta`), inbound forwarding, allowed senders, parse mode, message limit and polling flag. Global `TELEGRAM_*` values are defaults; override any of them per bot with `TELEGRAM_BOT_<NAME>_<FIELD>` (for example `TELEGRAM_BOT_BETA_ALLOWED_SENDERS=222` or `TELEGRAM_BOT_BETA_WEBHOOK_SECRET=...`). With a single `TELEGRAM_BOT_TOKEN` and no `TELEGRAM_BOTS`, the bot is named `default` and keeps the original `/telegram/webhook` path.
+
+Outbound requests choose a bot with the `bot` field, the `X-Telegram-Bot` header, `?bot=name`, or the `/webhook/<name>` path. The first configured bot is the default:
+
+```json
+{"bot":"beta","to":"123456789","message":"hello from beta"}
+```
+
+Forwarded inbound updates include `"bot":"<name>"` so a Pi extension can filter on it. `GET /health` reports aggregate counters plus a `bots` object with per-bot status.
+
 ## Outbound API
 
 `POST /webhook` (also `/send`) requires `Authorization: Bearer <WEBHOOK_TOKEN>` or `X-Webhook-Token`.
@@ -34,6 +53,7 @@ The CLI uses the same endpoint:
 ```bash
 npm run send -- --to 123456789 --message 'hello'
 npm run send -- --to 123456789 --file /tmp/report.pdf --message 'report'
+npm run send -- --bot beta --to 123456789 --message 'hello from beta'
 ```
 
 ## Pi extension and inbound bridge
@@ -44,7 +64,7 @@ Set `TELEGRAM_INBOUND_URL` and `INBOUND_WEBHOOK_TOKEN` in the service, plus `TEL
 pi --extension ./extensions/telegram-mirror.mjs
 ```
 
-The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. It never starts a second Pi process.
+The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. When several bots are configured, set `PI_TELEGRAM_BOT` to the bot this Pi session should use; the extension sends that name with every outbound call and ignores forwarded updates addressed to other bots. It never starts a second Pi process.
 
 ## Health and security
 

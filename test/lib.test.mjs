@@ -23,6 +23,9 @@ import {
   formatReplyPrompt,
   translateInboundSlashCommand,
   isRedundantName,
+  normalizeBotName,
+  parseBotDefinitions,
+  resolveBotConfigs,
 } from "../src/lib.mjs";
 
 describe("Telegram helpers", () => {
@@ -390,5 +393,56 @@ describe("Model Name Redundancy Check", () => {
   it("preserves non-redundant custom model names", () => {
     assert.equal(isRedundantName("Coding Specialist Llama", "llama-3-8b", "ollama"), false);
     assert.equal(isRedundantName("Production Reasoning Agent", "deepseek-r1-distill", "local"), false);
+  });
+});
+
+describe("Multi-bot configuration", () => {
+  it("parses bot definitions", () => {
+    assert.deepEqual(parseBotDefinitions("alpha=123:abc, beta=456:def"), [
+      { name: "alpha", token: "123:abc" },
+      { name: "beta", token: "456:def" },
+    ]);
+    assert.deepEqual(parseBotDefinitions("Alpha Bot:123:abc"), [{ name: "alpha-bot", token: "123:abc" }]);
+    assert.deepEqual(parseBotDefinitions(""), []);
+    assert.throws(() => parseBotDefinitions("broken"), /expected name=token/);
+  });
+
+  it("normalizes bot names", () => {
+    assert.equal(normalizeBotName("  Sales Bot  "), "sales-bot");
+    assert.equal(normalizeBotName("ops_eu"), "ops_eu");
+  });
+
+  it("falls back to the legacy single token", () => {
+    const [bot] = resolveBotConfigs({ TELEGRAM_BOT_TOKEN: "1:a" });
+    assert.equal(bot.name, "default");
+    assert.equal(bot.webhookPath, "/telegram/webhook");
+    assert.equal(bot.messageLimit, 3900);
+    assert.equal(bot.parseMode, "HTML");
+  });
+
+  it("gives every bot its own path and settings", () => {
+    const bots = resolveBotConfigs({
+      TELEGRAM_BOTS: "alpha=1:a,beta=2:b",
+      TELEGRAM_WEBHOOK_URL: "https://bot.example.com/telegram/webhook",
+      TELEGRAM_WEBHOOK_SECRET: "global-secret",
+      TELEGRAM_INBOUND_ALLOWED_SENDERS: "111",
+      TELEGRAM_BOT_BETA_WEBHOOK_SECRET: "beta-secret",
+      TELEGRAM_BOT_BETA_ALLOWED_SENDERS: "222,333",
+      TELEGRAM_BOT_BETA_MESSAGE_LIMIT: "1000",
+    });
+    assert.deepEqual(bots.map((b) => b.name), ["alpha", "beta"]);
+    assert.equal(bots[0].webhookPath, "/telegram/webhook/alpha");
+    assert.equal(bots[0].webhookUrl, "https://bot.example.com/telegram/webhook/alpha");
+    assert.equal(bots[0].webhookSecret, "global-secret");
+    assert.equal(bots[1].webhookSecret, "beta-secret");
+    assert.equal(bots[1].messageLimit, 1000);
+    assert.equal(bots[1].allowedSenders.has("222"), true);
+    assert.equal(bots[1].allowedSenders.has("111"), false);
+  });
+
+  it("rejects duplicates and missing tokens", () => {
+    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=1:x,A=2:y" }), /duplicate bot name/);
+    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=" }), /expected name=token/);
+    assert.throws(() => resolveBotConfigs({}), /TELEGRAM_BOT_TOKEN or TELEGRAM_BOTS is required/);
   });
 });

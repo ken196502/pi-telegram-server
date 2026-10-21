@@ -95,12 +95,12 @@ function post(urlValue, body, token) {
 }
 
 async function mirror(message, settings) {
-  const response = await post(settings.url, { to: settings.to, message }, settings.token);
+  const response = await post(settings.url, { to: settings.to, message, ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token);
   if (response.status < 200 || response.status >= 300) throw new Error(response.raw || `HTTP ${response.status}`);
 }
 
 async function sendFile(filePath, settings, caption) {
-  const payload = { to: settings.to, filePath, message: caption || "" };
+  const payload = { to: settings.to, filePath, message: caption || "", ...(settings.bot ? { bot: settings.bot } : {}) };
   const response = await post(settings.url, payload, settings.token);
   if (response.status < 200 || response.status >= 300) throw new Error(response.raw || `HTTP ${response.status}`);
   return JSON.parse(response.raw);
@@ -108,12 +108,12 @@ async function sendFile(filePath, settings, caption) {
 
 async function sendTyping(settings) {
   if (!settings.to || !settings.token) return;
-  await post(settings.url, { to: settings.to, action: "typing" }, settings.token).catch(() => {});
+  await post(settings.url, { to: settings.to, action: "typing", ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token).catch(() => {});
 }
 
 async function sendStopTyping(settings) {
   if (!settings.to || !settings.token) return;
-  await post(settings.url, { to: settings.to, action: "stop_typing" }, settings.token).catch(() => {});
+  await post(settings.url, { to: settings.to, action: "stop_typing", ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token).catch(() => {});
 }
 
 function readJson(req) {
@@ -160,6 +160,7 @@ export default function telegramMirror(pi) {
       url: env.PI_TELEGRAM_WEBHOOK_URL || env.TELEGRAM_WEBHOOK_URL || `http://${env.TELEGRAM_HOST || "127.0.0.1"}:${env.TELEGRAM_PORT || "3093"}/webhook`,
       token: env.PI_TELEGRAM_WEBHOOK_TOKEN || env.TELEGRAM_WEBHOOK_TOKEN || env.WEBHOOK_TOKEN || "",
       to: env.PI_TELEGRAM_TO || env.TELEGRAM_TO || "",
+      bot: env.PI_TELEGRAM_BOT || env.TELEGRAM_BOT || "",
       botToken: env.TELEGRAM_BOT_TOKEN || "",
       apiBase: (env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").replace(/\/$/, ""),
       inboundHost: env.PI_TELEGRAM_INBOUND_HOST || "127.0.0.1",
@@ -537,6 +538,7 @@ export default function telegramMirror(pi) {
       }
       try {
         const message = await readJson(req);
+        if (s.bot && message.bot && String(message.bot).toLowerCase() !== s.bot.toLowerCase()) return res.end('{"ok":true}');
         if (message.messageId && seen.has(message.messageId)) return res.end('{"ok":true}');
         if (message.messageId) seen.add(message.messageId);
         if (!message.body?.trim()) throw new Error("body is required");

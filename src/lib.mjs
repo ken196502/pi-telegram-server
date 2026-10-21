@@ -36,6 +36,88 @@ export function toTelegramChatId(value) {
   throw new Error("to must be a Telegram numeric chat ID or @username");
 }
 
+export function normalizeBotName(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Parses TELEGRAM_BOTS definitions such as "alpha=123:abc,beta=456:def".
+ * The "name:token" form is also accepted; the first "=" or ":" splits the pair.
+ */
+export function parseBotDefinitions(raw) {
+  const bots = [];
+  for (const entry of String(raw || "").split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    let index = trimmed.indexOf("=");
+    if (index <= 0) index = trimmed.indexOf(":");
+    if (index <= 0 || index === trimmed.length - 1) throw new Error(`invalid bot definition "${trimmed}"; expected name=token`);
+    const name = normalizeBotName(trimmed.slice(0, index));
+    const token = trimmed.slice(index + 1).trim();
+    if (!name) throw new Error(`invalid bot definition "${trimmed}"; bot name is required`);
+    bots.push({ name, token });
+  }
+  return bots;
+}
+
+function botEnvPrefix(name) {
+  return `TELEGRAM_BOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+/**
+ * Resolves one runtime configuration per bot.
+ *
+ * TELEGRAM_BOTS lists the bots ("alpha=token,beta=token"); when it is absent the
+ * legacy single TELEGRAM_BOT_TOKEN is used as the "default" bot. Global settings
+ * act as defaults and can be overridden per bot with TELEGRAM_BOT_<NAME>_<FIELD>
+ * (TOKEN, API_BASE_URL, WEBHOOK_PATH, WEBHOOK_URL, WEBHOOK_SECRET, INBOUND_URL,
+ * INBOUND_TOKEN, ALLOWED_SENDERS, MESSAGE_LIMIT, PARSE_MODE, POLLING).
+ */
+export function resolveBotConfigs(env = process.env) {
+  const globalWebhookPath = `/${String(env.TELEGRAM_WEBHOOK_PATH || "/telegram/webhook").replace(/^\/+/, "")}`;
+  const globalWebhookUrl = String(env.TELEGRAM_WEBHOOK_URL || "").replace(/\/+$/, "");
+  const definitions = parseBotDefinitions(env.TELEGRAM_BOTS || "");
+  if (!definitions.length && env.TELEGRAM_BOT_TOKEN) definitions.push({ name: "default", token: env.TELEGRAM_BOT_TOKEN });
+  if (!definitions.length) throw new Error("TELEGRAM_BOT_TOKEN or TELEGRAM_BOTS is required");
+
+  const multiple = definitions.length > 1;
+  const seen = new Set();
+  return definitions.map((definition) => {
+    const name = normalizeBotName(definition.name);
+    if (!name) throw new Error("bot name is required");
+    if (seen.has(name)) throw new Error(`duplicate bot name: ${name}`);
+    seen.add(name);
+
+    const prefix = botEnvPrefix(name);
+    const pick = (field, fallback) => {
+      const value = env[`${prefix}_${field}`];
+      return value === undefined || String(value).trim() === "" ? fallback : String(value).trim();
+    };
+
+    const token = pick("TOKEN", definition.token);
+    if (!token) throw new Error(`bot "${name}" is missing a token`);
+    const messageLimit = Number.parseInt(pick("MESSAGE_LIMIT", env.TELEGRAM_MESSAGE_LIMIT || "3900"), 10);
+    if (!Number.isInteger(messageLimit) || messageLimit < 1) throw new Error(`bot "${name}" message limit must be a positive integer`);
+    const parseMode = pick("PARSE_MODE", env.TELEGRAM_PARSE_MODE || "HTML").toUpperCase();
+    const webhookPath = `/${String(pick("WEBHOOK_PATH", multiple ? `${globalWebhookPath}/${name}` : globalWebhookPath)).replace(/^\/+/, "")}`;
+
+    return {
+      name,
+      token,
+      apiBase: pick("API_BASE_URL", env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").replace(/\/+$/, ""),
+      webhookPath,
+      webhookUrl: pick("WEBHOOK_URL", globalWebhookUrl ? (multiple ? `${globalWebhookUrl}/${name}` : globalWebhookUrl) : ""),
+      webhookSecret: pick("WEBHOOK_SECRET", env.TELEGRAM_WEBHOOK_SECRET || ""),
+      inboundUrl: pick("INBOUND_URL", env.TELEGRAM_INBOUND_URL || ""),
+      inboundToken: pick("INBOUND_TOKEN", env.INBOUND_WEBHOOK_TOKEN || ""),
+      allowedSenders: parseAllowedSenders(pick("ALLOWED_SENDERS", env.TELEGRAM_INBOUND_ALLOWED_SENDERS || "")),
+      polling: /^(1|true|yes)$/i.test(pick("POLLING", env.TELEGRAM_POLLING || "")),
+      parseMode: parseMode === "MARKDOWNV2" ? "MARKDOWNV2" : "HTML",
+      messageLimit,
+    };
+  });
+}
+
 export function splitMessage(text, limit = 3900) {
   const input = String(text || "").trim();
   if (!input) return [];
