@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, translateInboundSlashCommand } from "../src/lib.mjs";
+import { configuredBotNames, exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, normalizeBotName, translateInboundSlashCommand } from "../src/lib.mjs";
 import { 
   tmuxSessionExists, 
   isTmuxInstalled,
@@ -17,7 +17,8 @@ import {
   formatMenuForTelegram, 
   findMenuItemIndex, 
   selectMenuItem,
-  handleMenuSelection
+  handleMenuSelection,
+  resolveTmuxSession
 } from "../src/tmux-utils.mjs";
 
 const TMUX_NOT_INSTALLED_MSG = "tmux is not installed. Install it with:\n\n  sudo apt install tmux        (Debian/Ubuntu)\n  sudo dnf install tmux        (Fedora)\n  sudo pacman -S tmux          (Arch)\n  brew install tmux            (macOS)\n\nThen start Pi inside a tmux session and try again.";
@@ -94,12 +95,32 @@ function post(urlValue, body, token) {
   }));
 }
 
+// Never guess which bot a Pi session belongs to: with several bots configured
+// PI_TELEGRAM_BOT must name one explicitly.
+function botSelectionError(settings) {
+  const names = settings.botNames || [];
+  if (names.length > 1 && !settings.bot) {
+    return `Multiple bots are configured (${names.join(", ")}). Set PI_TELEGRAM_BOT=<name> for this Pi session, e.g. PI_TELEGRAM_BOT=${names[0]}.`;
+  }
+  if (settings.bot && names.length > 0 && !names.includes(normalizeBotName(settings.bot))) {
+    return `PI_TELEGRAM_BOT=${settings.bot} is not a configured bot (${names.join(", ")}).`;
+  }
+  return "";
+}
+
+function assertBotSelection(settings) {
+  const error = botSelectionError(settings);
+  if (error) throw new Error(error);
+}
+
 async function mirror(message, settings) {
+  assertBotSelection(settings);
   const response = await post(settings.url, { to: settings.to, message, ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token);
   if (response.status < 200 || response.status >= 300) throw new Error(response.raw || `HTTP ${response.status}`);
 }
 
 async function sendFile(filePath, settings, caption) {
+  assertBotSelection(settings);
   const payload = { to: settings.to, filePath, message: caption || "", ...(settings.bot ? { bot: settings.bot } : {}) };
   const response = await post(settings.url, payload, settings.token);
   if (response.status < 200 || response.status >= 300) throw new Error(response.raw || `HTTP ${response.status}`);
@@ -167,9 +188,14 @@ export default function telegramMirror(pi) {
       inboundPort: Number(env.PI_TELEGRAM_INBOUND_PORT || "3094"),
       inboundPath: env.PI_TELEGRAM_INBOUND_PATH || "/telegram/inbound",
       inboundToken: env.PI_TELEGRAM_INBOUND_TOKEN || env.INBOUND_WEBHOOK_TOKEN || "",
+      tmuxSession: env.PI_TG_TMUX_SS || "",
+      botNames: configuredBotNames(env),
     };
     return settings;
   };
+
+  // tmux target: PI_TG_TMUX_SS, else the session Pi runs in, else "pi".
+  const tmuxTarget = (cwd) => resolveTmuxSession(get(cwd || process.cwd()).tmuxSession);
 
   pi.registerTool({
     name: "send_telegram_file",
@@ -345,8 +371,9 @@ export default function telegramMirror(pi) {
       }
 
       // Check if tmux session exists
-      if (!tmuxSessionExists("pi")) {
-        await mirror("❌ No active Pi tmux session found. Please ensure Pi is running in a tmux session named 'pi'.", s).catch(() => {});
+      const tmux = tmuxTarget();
+      if (!tmuxSessionExists(tmux)) {
+        await mirror(`❌ No active Pi tmux session found. Please ensure Pi is running in a tmux session named '${tmux}' (set PI_TG_TMUX_SS to override).`, s).catch(() => {});
         return;
       }
 
@@ -361,7 +388,7 @@ export default function telegramMirror(pi) {
           await mirror("🔄 Pressing Down keys to collect menu items...", s).catch(() => {});
           
           try {
-            currentMenuItems = collectMenuFromScreen("pi");
+            currentMenuItems = collectMenuFromScreen(tmux);
             lastMenuSentAt = Date.now();
             
             if (currentMenuItems.length === 0) {
@@ -399,14 +426,14 @@ export default function telegramMirror(pi) {
         
         // Send selection to tmux
         try {
-          selectMenuItem("pi", currentMenuItems, selectedIndex);
+          selectMenuItem(tmux, currentMenuItems, selectedIndex);
           const selectedItem = currentMenuItems[selectedIndex];
           await mirror(`✓ Selected: ${selectedItem.text}\nWaiting for Pi to process...`, s).catch(() => {});
           
           // Wait a moment and capture the result
           setTimeout(async () => {
             try {
-              const resultContent = captureTmuxPane("pi", 50);
+              const resultContent = captureTmuxPane(tmux, 50);
               const menuDetection = detectMenu(resultContent);
               
               if (menuDetection.isMenu) {
@@ -444,7 +471,7 @@ export default function telegramMirror(pi) {
       await mirror("🔍 Collecting menu items...", s).catch(() => {});
 
       try {
-        currentMenuItems = collectMenuFromScreen("pi");
+        currentMenuItems = collectMenuFromScreen(tmux);
         lastMenuSentAt = Date.now();
         
         if (currentMenuItems.length > 0) {
@@ -486,7 +513,8 @@ export default function telegramMirror(pi) {
   // Check tmux for a menu, collect items by pressing Down, send to Telegram.
   // Returns collected items or empty array.
   async function checkTmuxForMenu(sendToUser = true) {
-    if (!tmuxSessionExists("pi")) return [];
+    const tmux = tmuxTarget();
+    if (!tmuxSessionExists(tmux)) return [];
     
     // Respect cooldown period after menu selection
     const timeSinceSelection = Date.now() - lastSelectionTime;
@@ -496,7 +524,7 @@ export default function telegramMirror(pi) {
     }
     
     try {
-      const items = collectMenuFromScreen("pi");
+      const items = collectMenuFromScreen(tmux);
       if (items.length >= 2) {
         currentMenuItems = items;
         lastMenuSentAt = Date.now();
@@ -517,6 +545,8 @@ export default function telegramMirror(pi) {
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
     const s = get(ctx.cwd);
+    const botError = botSelectionError(s);
+    if (botError) return ctx.ui.notify(botError, "error");
     if (!s.inboundToken) return ctx.ui.notify("Telegram inbound is disabled: set PI_TELEGRAM_INBOUND_TOKEN or INBOUND_WEBHOOK_TOKEN", "warning");
 
     if (server) {
@@ -573,7 +603,7 @@ export default function telegramMirror(pi) {
             if (index >= 0 && index < currentMenuItems.length) {
               const selectedItem = currentMenuItems[index];
               try {
-                selectMenuItem("pi", currentMenuItems, index);
+                selectMenuItem(tmuxTarget(), currentMenuItems, index);
                 lastSelectionTime = Date.now();
                 currentMenuItems = [];
                 await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
@@ -582,7 +612,7 @@ export default function telegramMirror(pi) {
                   const newItems = await checkTmuxForMenu(true);
                   if (newItems.length === 0) {
                     try {
-                      const screenContent = captureTmuxPane("pi", 35);
+                      const screenContent = captureTmuxPane(tmuxTarget(), 35);
                       const preview = screenContent.trim().slice(-500);
                       if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
                     } catch {}
@@ -638,7 +668,7 @@ export default function telegramMirror(pi) {
               const selectedItem = matchingItems[0];
               const index = currentMenuItems.indexOf(selectedItem);
               try {
-                selectMenuItem("pi", currentMenuItems, index);
+                selectMenuItem(tmuxTarget(), currentMenuItems, index);
                 lastSelectionTime = Date.now();
                 currentMenuItems = [];
                 await mirror(`✓ Selected: ${selectedItem.text}`, s).catch(() => {});
@@ -647,7 +677,7 @@ export default function telegramMirror(pi) {
                   const newItems = await checkTmuxForMenu(true);
                   if (newItems.length === 0) {
                     try {
-                      const screenContent = captureTmuxPane("pi", 35);
+                      const screenContent = captureTmuxPane(tmuxTarget(), 35);
                       const preview = screenContent.trim().slice(-500);
                       if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
                     } catch {}
@@ -762,17 +792,18 @@ export default function telegramMirror(pi) {
             await mirror(TMUX_NOT_INSTALLED_MSG, s).catch(() => {});
             return res.end('{"ok":true}');
           }
-          if (tmuxSessionExists("pi")) {
-            const screenBefore = captureTmuxPane("pi", 35);
+          const tmux = tmuxTarget();
+          if (tmuxSessionExists(tmux)) {
+            const screenBefore = captureTmuxPane(tmux, 35);
 
-            sendTmuxText("pi", trimmedBody);
-            sendTmuxKey("pi", "Enter");
+            sendTmuxText(tmux, trimmedBody);
+            sendTmuxKey(tmux, "Enter");
 
             setTimeout(async () => {
               try {
                 const menuItems = await checkTmuxForMenu(true);
                 if (menuItems.length === 0) {
-                  const screenAfter = captureTmuxPane("pi", 35);
+                  const screenAfter = captureTmuxPane(tmuxTarget(), 35);
                   const beforeLines = new Set(screenBefore.split('\n').map(l => l.trim()));
                   const afterLines = screenAfter.split('\n');
                   const newLines = afterLines.filter(line => {

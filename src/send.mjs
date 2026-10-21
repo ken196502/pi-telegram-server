@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "./lib.mjs";
 loadEnvFile(path.resolve(".env"));
-function usage() { return "Usage: npm run send -- --to <chat-id-or-@username> [--bot <name>] [--message <text>] [--file <local-path>] [--json <json-or-file>]\n\nEnvironment:\n  PI_TELEGRAM_WEBHOOK_URL or TELEGRAM_WEBHOOK_URL  webhook URL\n  PI_TELEGRAM_WEBHOOK_TOKEN or WEBHOOK_TOKEN        webhook token\n  PI_TELEGRAM_BOT or TELEGRAM_BOT                  default bot name\n  TELEGRAM_TO                                      default recipient"; }
+function usage() { return "Usage: npm run send -- --to <chat-id-or-@username> [--bot <name>] [--message <text>] [--file <local-path>] [--json <json-or-file>]\n\nEnvironment:\n  PI_TELEGRAM_WEBHOOK_URL or TELEGRAM_WEBHOOK_URL  webhook URL\n  PI_TELEGRAM_WEBHOOK_TOKEN or WEBHOOK_TOKEN        webhook token\n  PI_TELEGRAM_BOT or TELEGRAM_BOT                  bot name (required when several bots are configured)\n  TELEGRAM_TO                                      default recipient"; }
 function parseArgs(args) { const options = {}; for (let i = 0; i < args.length; i += 1) { const arg = args[i]; if (arg === "--help" || arg === "-h") return { help: true }; if (!["--to", "--bot", "--message", "--file", "--file-name", "--mime-type", "--url", "--json"].includes(arg)) throw new Error(`unknown option: ${arg}`); const value = args[++i]; if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`); options[arg.slice(2)] = value; } return options; }
 async function main() {
   const options = parseArgs(process.argv.slice(2));

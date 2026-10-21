@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 /**
  * Check if tmux is installed and available on PATH
@@ -15,6 +15,31 @@ export function isTmuxInstalled() {
 }
 
 /**
+ * Detect the tmux session that the current process runs inside.
+ * Relies on the TMUX/TMUX_PANE variables tmux exports into every pane.
+ * @returns {string} - Session name, or "" when not running inside tmux
+ */
+export function detectCurrentTmuxSession() {
+  if (!process.env.TMUX) return "";
+  try {
+    return execFileSync("tmux", ["display-message", "-p", "#S"], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Resolve which tmux session Pi commands should target.
+ * Order: explicit value → PI_TG_TMUX_SS → current tmux session → "pi".
+ * @param {string} explicit - Configured session name (optional)
+ * @returns {string} - Session name to use with the tmux helpers
+ */
+export function resolveTmuxSession(explicit) {
+  const configured = String(explicit || process.env.PI_TG_TMUX_SS || "").trim();
+  return configured || detectCurrentTmuxSession() || "pi";
+}
+
+/**
  * Check if a tmux session with the given name exists
  * @param {string} sessionName - Name of the tmux session to check
  * @returns {boolean} - True if session exists
@@ -22,7 +47,7 @@ export function isTmuxInstalled() {
 export function tmuxSessionExists(sessionName = "pi") {
   if (!isTmuxInstalled()) return false;
   try {
-    execSync(`tmux has-session -t ${sessionName} 2>/dev/null`, { encoding: "utf8" });
+    execFileSync("tmux", ["has-session", "-t", sessionName], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -37,7 +62,7 @@ export function tmuxSessionExists(sessionName = "pi") {
  */
 export function captureTmuxPane(sessionName = "pi", historyLines = 35) {
   try {
-    return execSync(`tmux capture-pane -t ${sessionName} -p -S -${historyLines}`, { encoding: "utf8" });
+    return execFileSync("tmux", ["capture-pane", "-t", sessionName, "-p", "-S", `-${historyLines}`], { encoding: "utf8" });
   } catch (error) {
     throw new Error(`Failed to capture tmux pane: ${error.message}`);
   }
@@ -52,8 +77,10 @@ export function captureTmuxPane(sessionName = "pi", historyLines = 35) {
  */
 export function sendTmuxKey(sessionName = "pi", key, options = {}) {
   try {
-    const literalFlag = options.literal ? "-l" : "";
-    execSync(`tmux send-keys -t ${sessionName} ${literalFlag} ${key}`, { encoding: "utf8" });
+    const args = ["send-keys", "-t", sessionName];
+    if (options.literal) args.push("-l");
+    args.push(key);
+    execFileSync("tmux", args, { encoding: "utf8" });
   } catch (error) {
     throw new Error(`Failed to send key to tmux: ${error.message}`);
   }
@@ -66,7 +93,7 @@ export function sendTmuxKey(sessionName = "pi", key, options = {}) {
  */
 export function sendTmuxText(sessionName = "pi", text) {
   try {
-    execSync(`tmux send-keys -t ${sessionName} -l "${text.replace(/"/g, '\\"')}"`, { encoding: "utf8" });
+    execFileSync("tmux", ["send-keys", "-t", sessionName, "-l", text], { encoding: "utf8" });
   } catch (error) {
     throw new Error(`Failed to send text to tmux: ${error.message}`);
   }
@@ -553,6 +580,8 @@ export function collectMenuFromScreen(sessionName = "pi", options = {}) {
 export default {
   tmuxSessionExists,
   isTmuxInstalled,
+  resolveTmuxSession,
+  detectCurrentTmuxSession,
   captureTmuxPane,
   sendTmuxKey,
   sendTmuxText,

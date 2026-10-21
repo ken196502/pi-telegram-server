@@ -118,6 +118,18 @@ export function resolveBotConfigs(env = process.env) {
   });
 }
 
+/**
+ * Names of the bots defined by the environment, without validating the rest of
+ * the configuration. Returns [] when nothing is configured.
+ */
+export function configuredBotNames(env = process.env) {
+  try {
+    return resolveBotConfigs(env).map((bot) => bot.name);
+  } catch {
+    return [];
+  }
+}
+
 export function splitMessage(text, limit = 3900) {
   const input = String(text || "").trim();
   if (!input) return [];

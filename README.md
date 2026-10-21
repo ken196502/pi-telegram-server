@@ -26,7 +26,7 @@ TELEGRAM_WEBHOOK_URL=https://bot.example.com/telegram/webhook
 
 Each bot gets its own webhook path (`/telegram/webhook/alpha`, `/telegram/webhook/beta`), inbound forwarding, allowed senders, parse mode, message limit and polling flag. Global `TELEGRAM_*` values are defaults; override any of them per bot with `TELEGRAM_BOT_<NAME>_<FIELD>` (for example `TELEGRAM_BOT_BETA_ALLOWED_SENDERS=222` or `TELEGRAM_BOT_BETA_WEBHOOK_SECRET=...`). With a single `TELEGRAM_BOT_TOKEN` and no `TELEGRAM_BOTS`, the bot is named `default` and keeps the original `/telegram/webhook` path.
 
-Outbound requests choose a bot with the `bot` field, the `X-Telegram-Bot` header, `?bot=name`, or the `/webhook/<name>` path. The first configured bot is the default:
+Outbound requests choose a bot with the `bot` field, the `X-Telegram-Bot` header, `?bot=name`, or the `/webhook/<name>` path. A single configured bot is used by default. When several bots are configured there is no fallback: a request that does not name a bot is rejected with `400` and an error listing the configured bots.
 
 ```json
 {"bot":"beta","to":"123456789","message":"hello from beta"}
@@ -64,7 +64,7 @@ Set `TELEGRAM_INBOUND_URL` and `INBOUND_WEBHOOK_TOKEN` in the service, plus `TEL
 pi --extension ./extensions/telegram-mirror.mjs
 ```
 
-The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. When several bots are configured, set `PI_TELEGRAM_BOT` to the bot this Pi session should use; the extension sends that name with every outbound call and ignores forwarded updates addressed to other bots. It never starts a second Pi process.
+The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension sends that name with every outbound call, ignores forwarded updates addressed to other bots, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process.
 
 ## Health and security
 

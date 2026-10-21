@@ -30,10 +30,19 @@ const startedAt = Date.now();
 const seenUpdates = new Set();
 const api = (bot, method) => bot.config.apiBase + "/bot" + bot.config.token + "/" + method;
 function resolveBot(value) {
-  if (value === undefined || value === null || String(value).trim() === "") return defaultBot;
-  const bot = bots.get(normalizeBotName(value));
-  if (!bot) throw new Error("unknown bot: " + value);
-  return bot;
+  const requested = value === undefined || value === null ? "" : String(value).trim();
+  if (requested) {
+    const bot = bots.get(normalizeBotName(requested));
+    if (!bot) throw new Error("unknown bot: " + value + "; configured bots: " + [...bots.keys()].join(", "));
+    return bot;
+  }
+  if (bots.size > 1) {
+    throw new Error(
+      "multiple bots configured (" + [...bots.keys()].join(", ") + "); " +
+      "specify the bot in the request and set PI_TELEGRAM_BOT=<name> for this Pi session"
+    );
+  }
+  return defaultBot;
 }
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
 const proxyAgent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
@@ -264,7 +273,8 @@ function startHttp() {
         ok: true,
         service: "telegram",
         status: connected === entries.length ? "connected" : connected ? "degraded" : "disconnected",
-        webhookPath: defaultBot.config.webhookPath,
+        webhookPath: bots.size === 1 ? defaultBot.config.webhookPath : null,
+        defaultBot: bots.size === 1 ? defaultBot.config.name : null,
         inboundEnabled: entries.some((b) => Boolean(b.config.inboundUrl && b.config.inboundToken)),
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
         sent: entries.reduce((n, b) => n + b.sent, 0),
@@ -292,7 +302,11 @@ function startHttp() {
     if (req.method === "POST" && parts.length === 2 && ["webhook", "send", "typing"].includes(parts[0])) return handleOutbound(req, res, decodeURIComponent(parts[1]));
     sendJson(res, req.method === "POST" ? 404 : 405, { ok: false, error: "not found" });
   });
-  server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port, bots: [...bots.keys()] }));
+  if (bots.size > 1) {
+  log("warn", "multiple bots configured; outbound requests must name a bot and each Pi session must set PI_TELEGRAM_BOT", { bots: [...bots.keys()] });
+}
+
+server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port, bots: [...bots.keys()] }));
 }
 async function startBot(bot) {
   try {
