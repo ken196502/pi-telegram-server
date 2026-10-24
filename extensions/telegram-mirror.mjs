@@ -160,6 +160,9 @@ export default function telegramMirror(pi) {
   let settings;
   let server;
   let typingInterval = null;
+  let typingWatchdog = null;
+  let agentRunning = false;
+  const TYPING_IDLE_TIMEOUT_MS = 120000;
   const seen = new Set();
   
   // Menu interception state
@@ -491,14 +494,27 @@ export default function telegramMirror(pi) {
   function startTyping() {
     const s = get(process.cwd());
     if (!s.to || !s.token) return;
-    if (typingInterval) return;
-    void sendTyping(s);
-    typingInterval = setInterval(() => {
+    if (!typingInterval) {
       void sendTyping(s);
-    }, 4000);
+      typingInterval = setInterval(() => {
+        void sendTyping(s);
+      }, 4000);
+    }
+    // Safety net: if no agent activity refreshes this for a while, drop the indicator
+    // so a command that never runs the agent cannot leave Telegram stuck on "typing…".
+    if (typingWatchdog) clearTimeout(typingWatchdog);
+    typingWatchdog = setTimeout(() => {
+      typingWatchdog = null;
+      stopTyping();
+    }, TYPING_IDLE_TIMEOUT_MS);
+    typingWatchdog.unref?.();
   }
 
   function stopTyping() {
+    if (typingWatchdog) {
+      clearTimeout(typingWatchdog);
+      typingWatchdog = null;
+    }
     if (typingInterval) {
       clearInterval(typingInterval);
       typingInterval = null;
@@ -715,132 +731,138 @@ export default function telegramMirror(pi) {
         startTyping();
         currentMenuItems = [];
         currentModelMenu = [];
+        try {
 
-        // ── Native model command handling ──
-        if (commandName === "/model") {
-          const arg = trimmedBody.replace(/^\/model\s*/i, "").trim();
-          const availableModels = latestCtx?.modelRegistry?.getAvailable?.() ||
-            latestCtx?.modelRegistry?.getAvailableSnapshot?.() || [];
-          const currentModel = latestCtx?.model;
-          const currentStr = currentModel ? `${currentModel.provider}/${currentModel.id}` : "unknown";
+          // ── Native model command handling ──
+          if (commandName === "/model") {
+            const arg = trimmedBody.replace(/^\/model\s*/i, "").trim();
+            const availableModels = latestCtx?.modelRegistry?.getAvailable?.() ||
+              latestCtx?.modelRegistry?.getAvailableSnapshot?.() || [];
+            const currentModel = latestCtx?.model;
+            const currentStr = currentModel ? `${currentModel.provider}/${currentModel.id}` : "unknown";
 
-          if (arg) {
-            const lower = arg.toLowerCase();
-            let matches = availableModels.filter(m =>
-              `${m.provider}/${m.id}`.toLowerCase() === lower ||
-              m.id.toLowerCase() === lower
-            );
-            if (matches.length === 0) {
-              matches = availableModels.filter(m =>
-                `${m.provider}/${m.id}`.toLowerCase().includes(lower) ||
-                (m.name && m.name.toLowerCase().includes(lower))
+            if (arg) {
+              const lower = arg.toLowerCase();
+              let matches = availableModels.filter(m =>
+                `${m.provider}/${m.id}`.toLowerCase() === lower ||
+                m.id.toLowerCase() === lower
               );
-            }
-
-            if (matches.length === 1) {
-              const target = matches[0];
-              try {
-                await pi.setModel(target);
-                await mirror(`✓ Switched model to: \`${target.provider}/${target.id}\``, s).catch(() => {});
-              } catch (err) {
-                await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
+              if (matches.length === 0) {
+                matches = availableModels.filter(m =>
+                  `${m.provider}/${m.id}`.toLowerCase().includes(lower) ||
+                  (m.name && m.name.toLowerCase().includes(lower))
+                );
               }
-              return res.end('{"ok":true}');
-            } else if (matches.length > 1) {
-              currentModelMenu = matches;
+
+              if (matches.length === 1) {
+                const target = matches[0];
+                try {
+                  await pi.setModel(target);
+                  await mirror(`✓ Switched model to: \`${target.provider}/${target.id}\``, s).catch(() => {});
+                } catch (err) {
+                  await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
+                }
+                return res.end('{"ok":true}');
+              } else if (matches.length > 1) {
+                currentModelMenu = matches;
+                modelMenuSentAt = Date.now();
+                const lines = [
+                  `🤖 **Multiple models match "${arg}":**`,
+                  `Current: \`${currentStr}\`\n`,
+                ];
+                matches.forEach((m, i) => {
+                  const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
+                  lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
+                });
+                lines.push(`\n👉 Reply with number to select.`);
+                await mirror(lines.join("\n"), s).catch(() => {});
+                return res.end('{"ok":true}');
+              } else {
+                await mirror(`❌ No model matching "${arg}" found. Use \`/model\` to view available models.`, s).catch(() => {});
+                return res.end('{"ok":true}');
+              }
+            } else {
+              const modelsToShow = latestCtx?.scopedModels?.length > 0
+                ? latestCtx.scopedModels.map(sm => sm.model)
+                : availableModels;
+
+              currentModelMenu = modelsToShow;
               modelMenuSentAt = Date.now();
+
               const lines = [
-                `🤖 **Multiple models match "${arg}":**`,
+                `🤖 **Available Models** (${modelsToShow.length} total)`,
                 `Current: \`${currentStr}\`\n`,
               ];
-              matches.forEach((m, i) => {
+              modelsToShow.forEach((m, i) => {
                 const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
                 lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
               });
-              lines.push(`\n👉 Reply with number to select.`);
+              lines.push(`\n👉 Reply with a number or name to switch.`);
               await mirror(lines.join("\n"), s).catch(() => {});
               return res.end('{"ok":true}');
-            } else {
-              await mirror(`❌ No model matching "${arg}" found. Use \`/model\` to view available models.`, s).catch(() => {});
+            }
+          }
+
+          if (isSlashCommand && !isRegisteredCommand) {
+            // TUI command (e.g. /theme, /settings) → send to tmux terminal directly
+            if (!isTmuxInstalled()) {
+              await mirror(TMUX_NOT_INSTALLED_MSG, s).catch(() => {});
               return res.end('{"ok":true}');
             }
-          } else {
-            const modelsToShow = latestCtx?.scopedModels?.length > 0
-              ? latestCtx.scopedModels.map(sm => sm.model)
-              : availableModels;
+            const tmux = tmuxTarget();
+            if (tmuxSessionExists(tmux)) {
+              const screenBefore = captureTmuxPane(tmux, 35);
 
-            currentModelMenu = modelsToShow;
-            modelMenuSentAt = Date.now();
+              sendTmuxText(tmux, trimmedBody);
+              sendTmuxKey(tmux, "Enter");
 
-            const lines = [
-              `🤖 **Available Models** (${modelsToShow.length} total)`,
-              `Current: \`${currentStr}\`\n`,
-            ];
-            modelsToShow.forEach((m, i) => {
-              const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
-              lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
-            });
-            lines.push(`\n👉 Reply with a number or name to switch.`);
-            await mirror(lines.join("\n"), s).catch(() => {});
-            return res.end('{"ok":true}');
-          }
-        }
+              setTimeout(async () => {
+                try {
+                  const menuItems = await checkTmuxForMenu(true);
+                  if (menuItems.length === 0) {
+                    const screenAfter = captureTmuxPane(tmuxTarget(), 35);
+                    const beforeLines = new Set(screenBefore.split('\n').map(l => l.trim()));
+                    const afterLines = screenAfter.split('\n');
+                    const newLines = afterLines.filter(line => {
+                      const trimmed = line.trim();
+                      return trimmed && !beforeLines.has(trimmed) &&
+                             !trimmed.startsWith('$') && !trimmed.startsWith('#') &&
+                             !trimmed.includes("Working");
+                    });
 
-        if (isSlashCommand && !isRegisteredCommand) {
-          // TUI command (e.g. /theme, /settings) → send to tmux terminal directly
-          if (!isTmuxInstalled()) {
-            await mirror(TMUX_NOT_INSTALLED_MSG, s).catch(() => {});
-            return res.end('{"ok":true}');
-          }
-          const tmux = tmuxTarget();
-          if (tmuxSessionExists(tmux)) {
-            const screenBefore = captureTmuxPane(tmux, 35);
-
-            sendTmuxText(tmux, trimmedBody);
-            sendTmuxKey(tmux, "Enter");
-
-            setTimeout(async () => {
-              try {
-                const menuItems = await checkTmuxForMenu(true);
-                if (menuItems.length === 0) {
-                  const screenAfter = captureTmuxPane(tmuxTarget(), 35);
-                  const beforeLines = new Set(screenBefore.split('\n').map(l => l.trim()));
-                  const afterLines = screenAfter.split('\n');
-                  const newLines = afterLines.filter(line => {
-                    const trimmed = line.trim();
-                    return trimmed && !beforeLines.has(trimmed) &&
-                           !trimmed.startsWith('$') && !trimmed.startsWith('#') &&
-                           !trimmed.includes("Working");
-                  });
-
-                  if (newLines.length > 0) {
-                    const output = newLines.join('\n').trim();
-                    const preview = output.slice(-1500).trim();
-                    await mirror(`📄 Output of \`${trimmedBody}\`:\n\n${preview}`, s).catch(() => {});
-                  } else {
-                    await mirror(`✓ Command \`${trimmedBody}\` sent to Pi.`, s).catch(() => {});
+                    if (newLines.length > 0) {
+                      const output = newLines.join('\n').trim();
+                      const preview = output.slice(-1500).trim();
+                      await mirror(`📄 Output of \`${trimmedBody}\`:\n\n${preview}`, s).catch(() => {});
+                    } else {
+                      await mirror(`✓ Command \`${trimmedBody}\` sent to Pi.`, s).catch(() => {});
+                    }
                   }
+                } catch (e) {
+                  console.error("Error capturing tmux output:", e.message);
                 }
-              } catch (e) {
-                console.error("Error capturing tmux output:", e.message);
-              }
-            }, 2000);
+              }, 2000);
+            }
+          } else if (isSlashCommand) {
+            // Registered extension command → send through Pi's command system
+            const commandText = translateInboundSlashCommand(trimmedBody);
+            await pi.sendUserMessage(commandText, {
+              expandPromptTemplates: true,
+              deliverAs: "followUp",
+            });
+          } else {
+            // Normal message → send to AI agent
+            const promptText = formatReplyPrompt(message.body, message.replyTo);
+            await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
           }
-        } else if (isSlashCommand) {
-          // Registered extension command → send through Pi's command system
-          const commandText = translateInboundSlashCommand(trimmedBody);
-          await pi.sendUserMessage(commandText, {
-            expandPromptTemplates: true,
-            deliverAs: "followUp",
-          });
-        } else {
-          // Normal message → send to AI agent
-          const promptText = formatReplyPrompt(message.body, message.replyTo);
-          await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
-        }
 
-        res.end('{"ok":true}');
+          res.end('{"ok":true}');
+        } finally {
+          // A command that never starts an agent run must not leave Telegram stuck on "typing…".
+          if (!agentRunning) stopTyping();
+        }
       } catch (e) {
+        stopTyping();
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
@@ -854,6 +876,7 @@ export default function telegramMirror(pi) {
   });
 
   pi.on("session_shutdown", () => {
+    agentRunning = false;
     stopTyping();
     currentMenuItems = [];
     server?.close();
@@ -862,6 +885,7 @@ export default function telegramMirror(pi) {
 
   pi.on("agent_start", (_event, ctx) => {
     if (ctx) latestCtx = ctx;
+    agentRunning = true;
     startTyping();
   });
 
@@ -895,12 +919,14 @@ export default function telegramMirror(pi) {
   });
 
   pi.on("agent_end", () => {
+    agentRunning = false;
     stopTyping();
     // Don't stop menu monitor here - menu might still be on screen
     // The monitor will stop itself when it detects a menu or times out
   });
 
   pi.on("agent_settled", () => {
+    agentRunning = false;
     stopTyping();
   });
 

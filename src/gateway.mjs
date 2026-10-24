@@ -222,7 +222,8 @@ function processUpdate(bot, update) {
     if (chatId !== undefined && isAllowedSender(senderId, bot.config.allowedSenders)) {
       bot.received += 1;
       bot.lastReceivedAt = new Date().toISOString();
-      startTypingKeepalive(bot, String(chatId));
+      const canForward = Boolean(bot.config.inboundUrl && bot.config.inboundToken);
+      if (canForward) startTypingKeepalive(bot, String(chatId));
       const replyTo = extractReplyInfo(message);
       void forwardInbound(bot, {
         type: "telegram_message",
@@ -233,7 +234,11 @@ function processUpdate(bot, update) {
         body: text,
         replyTo,
         timestamp: Number(message.date || Math.floor(Date.now() / 1000))
-      }).catch((e) => log("warn", "inbound webhook failed", { bot: bot.config.name, error: e.message }));
+      }).catch((e) => {
+        // The Pi session never received the message, so it cannot stop the indicator itself.
+        stopTypingKeepalive(bot, String(chatId));
+        log("warn", "inbound webhook failed", { bot: bot.config.name, error: e.message });
+      });
     }
   }
 }

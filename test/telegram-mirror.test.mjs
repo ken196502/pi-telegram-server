@@ -18,6 +18,9 @@ test("message_end forwards provider errors through the webhook", async (t) => {
     PI_TELEGRAM_WEBHOOK_URL: `http://127.0.0.1:${server.address().port}/webhook`,
     PI_TELEGRAM_WEBHOOK_TOKEN: "test-token",
     PI_TELEGRAM_TO: "123",
+    TELEGRAM_BOTS: "",
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    PI_TELEGRAM_BOT: "",
   };
   for (const [key, value] of Object.entries(env)) {
     const previous = process.env[key];
