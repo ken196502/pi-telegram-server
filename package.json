@@ -15,6 +15,7 @@
   "files": [
     ".env.example",
     "extensions/",
+    "scripts/",
     "src/",
     "systemd/",
     "launchd/",

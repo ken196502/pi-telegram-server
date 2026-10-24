@@ -64,6 +64,13 @@ Set `TELEGRAM_INBOUND_URL` and `INBOUND_WEBHOOK_TOKEN` in the service, plus `TEL
 pi --extension ./extensions/telegram-mirror.mjs
 ```
 
+With several bots configured every Pi session must be bound to exactly one of them. `scripts/start-pi-session.sh` reads `TELEGRAM_BOT_<NAME>_INBOUND_URL` from `.env` and exports `PI_TELEGRAM_BOT`, `PI_TELEGRAM_INBOUND_PORT` and `PI_TG_TMUX_SS` before starting Pi, so the required variables cannot be forgotten:
+
+```bash
+scripts/start-pi-session.sh main pi        # bot "main",      tmux session "pi"
+scripts/start-pi-session.sh inspilot pi2   # bot "inspilot", tmux session "pi2"
+```
+
 The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension sends that name with every outbound call, ignores forwarded updates addressed to other bots, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process.
 
 ## Health and security
