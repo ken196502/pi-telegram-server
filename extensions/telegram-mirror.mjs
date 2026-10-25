@@ -61,16 +61,6 @@ function errorOf(message) {
   return message.stopReason === "error" ? "❌ Pi error: Unknown error (no details provided)." : "";
 }
 
-function extractFilePaths(text) {
-  const paths = [];
-  const regex = /(?:^|\s)(\/[^\s]+\.(?:pdf|doc|docx|txt|csv|json|xml|html|md|zip|tar|gz|png|jpg|jpeg|gif|mp3|mp4|wav|py|js|ts|sh|bash|log))/gmi;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    paths.push(match[1].trim());
-  }
-  return paths;
-}
-
 function post(urlValue, body, token) {
   const url = new URL(urlValue);
   const payload = JSON.stringify(body);
@@ -939,12 +929,9 @@ export default function telegramMirror(pi) {
     stopTyping();
     if (!s.to || !s.token) return ctx.ui.notify("Telegram mirror is not configured: set PI_TELEGRAM_TO and PI_TELEGRAM_WEBHOOK_TOKEN", "warning");
 
-    const filePaths = extractFilePaths(message);
-    if (filePaths.length > 0) {
-      for (const filePath of filePaths) {
-        void sendFile(filePath, s, `File from Pi: ${path.basename(filePath)}`).catch((e) => ctx.ui.notify(`Telegram file send failed: ${e.message}`, "error"));
-      }
-    }
+    // NOTE: files are never uploaded automatically. Mentioning an absolute path in a
+    // reply used to trigger an upload (which leaked credentials such as cookies.txt).
+    // Use the explicit `send_telegram_file` tool when a file must be delivered.
 
     // Automatically extract tables to HTML document with frozen header & first column
     try {
