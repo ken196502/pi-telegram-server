@@ -18,6 +18,7 @@ import {
   normalizeTelegramId,
   parseAllowedSenders,
   splitMessage,
+  matchSensitiveFile,
   toTelegramChatId,
   extractReplyInfo,
   formatReplyPrompt,
@@ -444,5 +445,44 @@ describe("Multi-bot configuration", () => {
     assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=1:x,A=2:y" }), /duplicate bot name/);
     assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=" }), /expected name=token/);
     assert.throws(() => resolveBotConfigs({}), /TELEGRAM_BOT_TOKEN or TELEGRAM_BOTS is required/);
+  });
+});
+
+describe("matchSensitiveFile", () => {
+  it("blocks exported session cookies and other credential files", () => {
+    const blocked = [
+      "/mnt/share/VM/cookies.txt",
+      "/tmp/cookie.txt",
+      "cookies.json",
+      "/home/u/x_cookies.json",
+      "/srv/app/.env",
+      "/srv/app/.env.local",
+      "/home/u/.config/gh/hosts.yml.bak.token",
+      "/keys/service.pem",
+      "/keys/service.key",
+      "/home/u/.ssh/id_rsa",
+      "/srv/app/auth.json",
+      "/srv/app/credentials.json",
+      "/srv/app/puter_token.json",
+      // Conservative by design: anything named *cookie* is treated as credential-like.
+      "/srv/app/data/cookie-recipe.md",
+    ];
+    for (const filePath of blocked) {
+      assert.ok(matchSensitiveFile(filePath), `${filePath} must be blocked`);
+    }
+  });
+
+  it("allows ordinary documents", () => {
+    const allowed = [
+      "/mnt/share/VM/AIGC-pipeline/artifacts/run/FINAL_REPORT.md",
+      "/tmp/gateway-guard-ok.txt",
+      "/mnt/share/VM/AIGC-pipeline/artifacts/run/explainer/explainer-video.mp4",
+      "/tmp/table-123.html",
+      "/srv/app/logs/pipeline.log",
+      "/srv/app/data/recipe-notes.md",
+    ];
+    for (const filePath of allowed) {
+      assert.equal(matchSensitiveFile(filePath), null, `${filePath} must be allowed`);
+    }
   });
 });

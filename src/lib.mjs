@@ -1127,3 +1127,32 @@ export function isRedundantName(name, id, provider = "") {
   return false;
 }
 
+
+/**
+ * Files that must never leave the host through the Telegram webhook, whatever
+ * client asks for them: exported session cookies, tokens, keys, dotenv files.
+ * The gateway enforces this at its single upload choke point, so an older or
+ * misbehaving client cannot leak credentials by auto-attaching a file.
+ */
+const SENSITIVE_FILE_PATTERNS = [
+  /^cookies?\.txt$/i,
+  /^cookies?\.(json|txt)$/i,
+  /(^|[._-])cookies?([._-]|$)/i,
+  /^x_cookies\.json$/i,
+  /^\.env(\..*)?$/i,
+  /(^|[._-])tokens?([._-]|$)/i,
+  /^auth\.json$/i,
+  /credentials/i,
+  /\.(pem|key|p12|pfx|jks|keystore)$/i,
+  /^id_(rsa|ed25519|ecdsa)/i,
+];
+
+/**
+ * Returns the matching pattern when `filePath` looks like a credential file,
+ * otherwise null. Matching is done on the basename only.
+ */
+export function matchSensitiveFile(filePath) {
+  if (!filePath || typeof filePath !== "string") return null;
+  const base = filePath.split(/[\\/]/).pop() || "";
+  return SENSITIVE_FILE_PATTERNS.find((re) => re.test(base)) || null;
+}

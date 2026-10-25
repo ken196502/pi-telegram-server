@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import undici from "undici";
-import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram, extractReplyInfo, resolveBotConfigs, normalizeBotName } from "./lib.mjs";
+import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram, extractReplyInfo, resolveBotConfigs, normalizeBotName, matchSensitiveFile } from "./lib.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -142,6 +142,12 @@ async function sendDocument(bot, to, filePath, fileName, mimetype, caption) {
   const resolved = path.resolve(filePath.trim()); let stat; try { stat = fs.statSync(resolved); } catch (e) { if (e.code === "ENOENT") throw new Error("filePath does not exist"); throw new Error("cannot read filePath: " + e.message); }
   if (!stat.isFile()) throw new Error("filePath must reference a regular file");
   try { fs.accessSync(resolved, fs.constants.R_OK); } catch { throw new Error("filePath is not readable"); }
+  const blocked = matchSensitiveFile(resolved);
+  if (blocked) {
+    const err = new Error(`refusing to send sensitive credential file: ${path.basename(resolved)} (matched ${blocked})`);
+    err.statusCode = 403;
+    throw err;
+  }
   const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : path.basename(resolved);
   const type = typeof mimetype === "string" && mimetype.trim() ? mimetype.trim() : guessMimeType(name);
   const form = new UndiciFormData(); form.append("chat_id", chatId); form.append("document", new File([fs.readFileSync(resolved)], name, { type }));
@@ -169,7 +175,7 @@ async function handleOutbound(req, res, botName) {
       const result = await sendChatAction(bot, to, action);
       return sendJson(res, 200, { ok: true, ...result });
     } catch (e) {
-      return sendJson(res, bot.status === "connected" ? 400 : 503, { ok: false, error: e.message });
+      return sendJson(res, e?.statusCode || (bot.status === "connected" ? 400 : 503), { ok: false, error: e.message });
     }
   }
 
@@ -197,14 +203,14 @@ async function handleOutbound(req, res, botName) {
         try { fs.unlinkSync(tmpFile); } catch {}
       }
     } catch (e) {
-      return sendJson(res, bot.status === "connected" ? 400 : 503, { ok: false, error: e.message });
+      return sendJson(res, e?.statusCode || (bot.status === "connected" ? 400 : 503), { ok: false, error: e.message });
     }
   }
 
   const message = body?.message ?? body?.text ?? body?.body ?? ""; const filePath = body?.filePath ?? body?.file ?? body?.path;
   if ((typeof message !== "string" || !message.trim()) && (typeof filePath !== "string" || !filePath.trim())) return sendJson(res, 400, { ok: false, error: "message or filePath is required" });
   try { const result = filePath ? await sendDocument(bot, to, filePath, body?.fileName, body?.mimetype ?? body?.mimeType, message) : await sendText(bot, to, message); sendJson(res, 200, { ok: true, ...result }); }
-  catch (e) { sendJson(res, bot.status === "connected" ? 400 : 503, { ok: false, error: e.message }); }
+  catch (e) { sendJson(res, e?.statusCode || (bot.status === "connected" ? 400 : 503), { ok: false, error: e.message }); }
 }
 async function forwardInbound(bot, payload) {
   if (!bot.config.inboundUrl || !bot.config.inboundToken) return;
