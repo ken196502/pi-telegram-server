@@ -2,6 +2,38 @@
 
 A small Telegram Bot API gateway for Pi. It is webhook-only: the process never polls `getUpdates`. Telegram delivers updates to the configured webhook path, while an authenticated local webhook sends text and files through `sendMessage`/`sendDocument`.
 
+## One-command setup (Linux)
+
+On a fresh Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE or Alpine machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ken196502/pi-telegram-server/main/LinuxAgentSetup.sh | bash
+```
+
+`LinuxAgentSetup.sh` detects the distribution and package manager, installs git, Node.js >= 22.19, tmux and Pi, writes `~/.pi/agent/AGENTS.md`, clones this repository to `~/Pi/pi-telegram-server`, runs `npm install` and creates `.env` from `.env.example`. It is idempotent, keeps an existing `AGENTS.md` (unless `--force-agents` is given), and uses `sudo` only for system packages.
+
+Pass options after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ken196502/pi-telegram-server/main/LinuxAgentSetup.sh \
+  | bash -s -- --dir ~/code/pi-telegram-server --force-agents
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--dir <path>` | Clone/update the repo at `<path>` (default `~/Pi/pi-telegram-server`) |
+| `--skip-packages` | Do not install git/curl/tmux/Node.js |
+| `--skip-pi` | Do not install Pi |
+| `--update-pi` | Run `pi update` if Pi is already installed |
+| `--skip-repo` | Do not clone or update the repository |
+| `--skip-npm` | Do not run `npm install` |
+| `--force-agents` | Overwrite `~/.pi/agent/AGENTS.md` (a timestamped backup is kept) |
+| `--dry-run` | Print what would run, change nothing |
+
+From a local checkout, run `./LinuxAgentSetup.sh` instead. After it finishes, edit `.env` with your BotFather token and secrets, then `npm start`.
+
+See [Docs/LinuxAgentSetup-Plan.md](Docs/LinuxAgentSetup-Plan.md) for the design notes.
+
 ## Setup
 
 ```bash
