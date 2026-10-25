@@ -2,9 +2,10 @@
 #
 # LinuxAgentSetup.sh - bootstrap a Linux machine for Pi + pi-telegram-server.
 #
-# Installs git, Node.js (>= 22.19), tmux and Pi, writes the global Pi
-# AGENTS.md, clones this repository, installs npm dependencies and creates
-# .env from .env.example.
+# Installs git, Node.js (>= 22.19), tmux and Pi, installs opencode plus the
+# pi-opencode-zen extension (OpenCode Zen free models inside Pi), writes the
+# global Pi AGENTS.md, clones this repository, installs npm dependencies and
+# creates .env from .env.example.
 #
 # Usage (one-liner):
 #   curl -fsSL https://raw.githubusercontent.com/ken196502/pi-telegram-server/main/LinuxAgentSetup.sh | bash
@@ -15,6 +16,8 @@
 #   --skip-packages    Do not install git/curl/tmux/Node.js
 #   --skip-pi          Do not install Pi
 #   --update-pi        Run "pi update" when Pi is already installed
+#   --skip-opencode    Do not install opencode
+#   --skip-zen         Do not install the pi-opencode-zen Pi extension
 #   --skip-repo        Do not clone or update the repository
 #   --skip-npm         Do not run npm install
 #   --force-agents     Overwrite ~/.pi/agent/AGENTS.md (backup is kept)
@@ -31,6 +34,8 @@ TARGET_DIR="$HOME/Pi/pi-telegram-server"
 SKIP_PACKAGES=false
 SKIP_PI=false
 UPDATE_PI=false
+SKIP_OPENCODE=false
+SKIP_ZEN=false
 SKIP_REPO=false
 SKIP_NPM=false
 FORCE_AGENTS=false
@@ -67,6 +72,8 @@ Options:
   --skip-packages    Do not install git/curl/tmux/Node.js
   --skip-pi          Do not install Pi
   --update-pi        Run "pi update" when Pi is already installed
+  --skip-opencode    Do not install opencode
+  --skip-zen         Do not install the pi-opencode-zen Pi extension
   --skip-repo        Do not clone or update the repository
   --skip-npm         Do not run npm install
   --force-agents     Overwrite ~/.pi/agent/AGENTS.md (backup is kept)
@@ -81,6 +88,8 @@ while [ "$#" -gt 0 ]; do
     --skip-packages)  SKIP_PACKAGES=true; shift ;;
     --skip-pi)        SKIP_PI=true; shift ;;
     --update-pi)      UPDATE_PI=true; shift ;;
+    --skip-opencode)  SKIP_OPENCODE=true; shift ;;
+    --skip-zen)       SKIP_ZEN=true; shift ;;
     --skip-repo)      SKIP_REPO=true; shift ;;
     --skip-npm)       SKIP_NPM=true; shift ;;
     --force-agents)   FORCE_AGENTS=true; shift ;;
@@ -246,6 +255,74 @@ install_pi() {
   ok "pi $(pi --version 2>/dev/null || echo unknown) ($(command -v pi))"
 }
 
+persist_path() {
+  # persist_path <dir> <comment> - export in this shell and append to ~/.bashrc
+  local dir="$1" comment="$2"
+  local rc="$HOME/.bashrc"
+  if $DRY_RUN; then
+    info "[dry-run] would ensure $dir is in $rc"
+    return
+  fi
+  if [ -f "$rc" ] && ! grep -qF "$dir" "$rc"; then
+    printf '\n# %s\nexport PATH="%s:$PATH"\n' "$comment" "$dir" >> "$rc"
+    info "added $dir to $rc"
+  fi
+}
+
+ensure_opencode() {
+  export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+  if command -v opencode >/dev/null 2>&1; then
+    ok "opencode already installed: $(opencode --version 2>/dev/null || echo unknown)"
+    return
+  fi
+  info "installing opencode from https://opencode.ai/v2/install"
+  run_shell "curl -fsSL https://opencode.ai/v2/install | bash"
+  if $DRY_RUN; then
+    info "[dry-run] would verify the opencode binary afterwards"
+    return
+  fi
+  local found=""
+  for d in "$HOME/.opencode/bin" "$HOME/.local/bin" /usr/local/bin /usr/bin; do
+    if [ -x "$d/opencode" ]; then found="$d"; break; fi
+  done
+  [ -n "$found" ] || die "opencode installation finished but no 'opencode' binary was found in ~/.opencode/bin, ~/.local/bin, /usr/local/bin or /usr/bin; open a new shell and re-run with --skip-opencode"
+  export PATH="$found:$PATH"
+  persist_path "$found" "opencode CLI"
+  ok "opencode $(opencode --version 2>/dev/null || echo unknown) ($found/opencode)"
+}
+
+install_zen_extension() {
+  ensure_pi_path
+  command -v pi >/dev/null 2>&1 || die "pi is not installed; cannot install the pi-opencode-zen extension"
+  info "installing the pi-opencode-zen Pi extension (OpenCode Zen free models)"
+  run pi install git:github.com/rabden/pi-opencode-zen
+  if $DRY_RUN; then
+    info "[dry-run] would verify the extension in ~/.pi/agent/settings.json"
+    return
+  fi
+  grep -q 'pi-opencode-zen' "$HOME/.pi/agent/settings.json" 2>/dev/null \
+    || die "pi install reported success but pi-opencode-zen is not listed in ~/.pi/agent/settings.json"
+  ok "pi-opencode-zen installed"
+}
+
+ensure_opencode_api_key() {
+  if [ -n "${OPENCODE_API_KEY:-}" ]; then
+    ok "OPENCODE_API_KEY is already set; leaving it untouched"
+    return
+  fi
+  info "setting OPENCODE_API_KEY=public (free OpenCode Zen models need no real key)"
+  export OPENCODE_API_KEY=public
+  local rc="$HOME/.bashrc"
+  if $DRY_RUN; then
+    info "[dry-run] would persist OPENCODE_API_KEY=public in $rc"
+    return
+  fi
+  if [ -f "$rc" ] && ! grep -q 'OPENCODE_API_KEY' "$rc"; then
+    printf '\n# OpenCode Zen (pi-opencode-zen): "public" unlocks the free models\nexport OPENCODE_API_KEY=public\n' >> "$rc"
+    info "persisted OPENCODE_API_KEY=public in $rc"
+  fi
+}
+
 clone_repo() {
   if [ -d "$TARGET_DIR/.git" ]; then
     info "updating existing checkout at $TARGET_DIR"
@@ -328,6 +405,8 @@ Next steps:
 
 Notes:
   - Pi reads global rules from ~/.pi/agent/AGENTS.md
+  - OpenCode Zen free models: pick one in Pi with /model (opencode-zen/*-free)
+    or run: OPENCODE_API_KEY=public pi --model opencode-zen/<model>-free --print "hi"
   - Run './LinuxAgentSetup.sh --help' for all options
 EOF
 }
@@ -347,6 +426,19 @@ main() {
     info "skipping Pi installation (--skip-pi)"
   else
     install_pi
+  fi
+
+  if $SKIP_OPENCODE; then
+    info "skipping opencode installation (--skip-opencode)"
+  else
+    ensure_opencode
+  fi
+
+  if $SKIP_ZEN; then
+    info "skipping pi-opencode-zen extension (--skip-zen)"
+  else
+    install_zen_extension
+    ensure_opencode_api_key
   fi
 
   if $SKIP_REPO; then
