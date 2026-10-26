@@ -61,7 +61,7 @@ function errorOf(message) {
   return message.stopReason === "error" ? "❌ Pi error: Unknown error (no details provided)." : "";
 }
 
-function post(urlValue, body, token) {
+function post(urlValue, body, token, timeoutMs = 15000) {
   const url = new URL(urlValue);
   const payload = JSON.stringify(body);
   const transport = url.protocol === "https:" ? import("node:https") : import("node:http");
@@ -79,7 +79,7 @@ function post(urlValue, body, token) {
       response.on("data", (c) => { raw += c; });
       response.on("end", () => resolve({ status: response.statusCode || 0, raw }));
     });
-    request.setTimeout(15000, () => request.destroy(new Error("webhook request timed out")));
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("webhook request timed out")));
     request.on("error", reject);
     request.end(payload);
   }));
@@ -112,7 +112,7 @@ async function mirror(message, settings) {
 async function sendFile(filePath, settings, caption) {
   assertBotSelection(settings);
   const payload = { to: settings.to, filePath, message: caption || "", ...(settings.bot ? { bot: settings.bot } : {}) };
-  const response = await post(settings.url, payload, settings.token);
+  const response = await post(settings.url, payload, settings.token, 300000);
   if (response.status < 200 || response.status >= 300) throw new Error(response.raw || `HTTP ${response.status}`);
   return JSON.parse(response.raw);
 }
@@ -152,7 +152,7 @@ export default function telegramMirror(pi) {
   let typingInterval = null;
   let typingWatchdog = null;
   let agentRunning = false;
-  const TYPING_IDLE_TIMEOUT_MS = 120000;
+  const TYPING_IDLE_TIMEOUT_MS = Number(process.env.PI_TG_TYPING_IDLE_MS || 120000);
   const seen = new Set();
   
   // Menu interception state
@@ -490,9 +490,15 @@ export default function telegramMirror(pi) {
         void sendTyping(s);
       }, 4000);
     }
-    // Safety net: if no agent activity refreshes this for a while, drop the indicator
-    // so a command that never runs the agent cannot leave Telegram stuck on "typing…".
-    if (typingWatchdog) clearTimeout(typingWatchdog);
+    // Safety net: drop the indicator when a dispatched message never starts an agent run
+    // (slash command, rejected prompt, error path). This watchdog must NOT run while a run
+    // is active: long thinking phases and silent tool calls emit no events for minutes, and
+    // an idle timeout there drops the indicator in the middle of a turn.
+    if (typingWatchdog) {
+      clearTimeout(typingWatchdog);
+      typingWatchdog = null;
+    }
+    if (agentRunning) return;
     typingWatchdog = setTimeout(() => {
       typingWatchdog = null;
       stopTyping();
@@ -926,7 +932,8 @@ export default function telegramMirror(pi) {
     const error = errorOf(event.message);
     const s = get(ctx.cwd);
     if (!message && !error) return;
-    stopTyping();
+    // Keep the indicator alive while the run continues (assistant message -> tool call).
+    if (!agentRunning) stopTyping();
     if (!s.to || !s.token) return ctx.ui.notify("Telegram mirror is not configured: set PI_TELEGRAM_TO and PI_TELEGRAM_WEBHOOK_TOKEN", "warning");
 
     // NOTE: files are never uploaded automatically. Mentioning an absolute path in a

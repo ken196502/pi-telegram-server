@@ -64,16 +64,32 @@ async function telegramRequest(bot, method, options = {}) {
   return body.result;
 }
 
+function debugTyping() { return process.env.TELEGRAM_DEBUG_TYPING === "1"; }
+// Never swallow typing failures silently: a broken indicator must be visible in the log.
+function sendTypingAction(bot, chatId) {
+  if (debugTyping()) log("debug", "typing signal", { bot: bot.config.name, to: chatId });
+  return sendChatAction(bot, chatId, "typing").then((result) => {
+    bot.lastTypingAt = new Date().toISOString();
+    bot.typingErrors = 0;
+    return result;
+  }).catch((err) => {
+    bot.typingErrors = (bot.typingErrors || 0) + 1;
+    log("warn", "sendChatAction failed", { bot: bot.config.name, to: chatId, error: err.message, consecutive: bot.typingErrors });
+    throw err;
+  });
+}
+
 function startTypingKeepalive(bot, to) {
   const chatId = toTelegramChatId(to);
   let entry = bot.typing.get(chatId);
   if (!entry) {
-    void sendChatAction(bot, chatId, "typing").catch(() => {});
+    void sendTypingAction(bot, chatId).catch(() => {});
     const interval = setInterval(() => {
-      void sendChatAction(bot, chatId, "typing").catch(() => {});
+      void sendTypingAction(bot, chatId).catch(() => {});
     }, 4000);
     entry = { interval, timeout: null };
     bot.typing.set(chatId, entry);
+    if (debugTyping()) log("debug", "typing keepalive started", { bot: bot.config.name, to: chatId });
   }
   // Refresh watchdog timeout on each typing signal
   if (entry.timeout) clearTimeout(entry.timeout);
@@ -89,6 +105,7 @@ function stopTypingKeepalive(bot, to) {
     clearInterval(existing.interval);
     if (existing.timeout) clearTimeout(existing.timeout);
     bot.typing.delete(chatId);
+    if (debugTyping()) log("debug", "typing keepalive stopped", { bot: bot.config.name, to: chatId });
   }
 }
 
@@ -302,6 +319,9 @@ function startHttp() {
           forwarded: b.forwarded,
           lastSentAt: b.lastSentAt,
           lastReceivedAt: b.lastReceivedAt,
+          typingActive: b.typing.size > 0,
+          lastTypingAt: b.lastTypingAt || null,
+          typingErrors: b.typingErrors || 0,
         }])),
       });
     }
