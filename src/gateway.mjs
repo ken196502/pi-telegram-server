@@ -58,7 +58,19 @@ function sendJson(res, code, body) { const payload = JSON.stringify(body); res.w
 function readJson(req) { return new Promise((resolve, reject) => { let body = "", size = 0; req.setEncoding("utf8"); req.on("data", (chunk) => { size += Buffer.byteLength(chunk); if (size > 1024 * 1024) { reject(new Error("request body is too large")); req.destroy(); return; } body += chunk; }); req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch { reject(new Error("request body must be valid JSON")); } }); req.on("error", reject); }); }
 function authorized(req) { const auth = String(req.headers.authorization || ""); const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : ""; return (bearer || String(req.headers["x-webhook-token"] || "")) === config.webhookToken; }
 async function telegramRequest(bot, method, options = {}) {
-  const response = await proxyFetch(api(bot, method), options);
+  let response;
+  try {
+    response = await proxyFetch(api(bot, method), options);
+  } catch (err) {
+    // Network-level failure (e.g. "fetch failed"). Preserve the underlying
+    // cause (ENOTFOUND / ECONNREFUSED / TLS / decode) so outages are diagnosable
+    // instead of surfacing a bare "fetch failed".
+    const cause = err.cause?.message || err.cause?.code;
+    const detail = cause ? `${err.message} (${cause})` : (err.message || "fetch failed");
+    const wrapped = new Error(`Telegram ${method} request failed: ${detail}`);
+    wrapped.cause = err.cause || err;
+    throw wrapped;
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.ok) throw new Error(body.description || "Telegram API HTTP " + response.status);
   return body.result;
