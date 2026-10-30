@@ -103,6 +103,26 @@ scripts/start-pi-session.sh main pi        # bot "main",      tmux session "pi"
 scripts/start-pi-session.sh inspilot pi2   # bot "inspilot", tmux session "pi2"
 ```
 
+Launch the gateway and both Pi sessions in detached tmux sessions with:
+
+```bash
+./scripts/start-two-pi-sessions.sh
+tmux attach -t pi     # main
+tmux attach -t pi2    # inspilot
+```
+
+Both sessions start with `/mnt/share/VM` as their workspace. If `/mnt/share`
+is not mounted (for example, after reboot), the launcher runs
+`sudo mount -t virtiofs share /mnt/share` first; enter your sudo password when
+prompted. The shared `VM` directory must already exist and be writable.
+
+The launcher checks both Pi listeners, starts the gateway in `pi-telegram-gateway` if needed, and waits for both bots to connect. Gateway output goes to `gateway.log`. It respects configured proxy variables and uses the local Mihomo HTTP proxy at `127.0.0.1:7890` when available if no proxy is configured. A failed readiness check exits with an error instead of reporting success.
+
+The launcher leaves existing sessions running, including their current workspace. To use different bot names or
+pass Pi arguments to both sessions, run
+`./scripts/start-two-pi-sessions.sh alpha beta [pi args...]`. Each bot needs its
+own `TELEGRAM_BOT_<NAME>_INBOUND_URL` in `.env`, with different ports.
+
 The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension sends that name with every outbound call, ignores forwarded updates addressed to other bots, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process.
 
 ## Health and security
