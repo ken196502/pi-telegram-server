@@ -2,7 +2,7 @@
 # Restart the Pi sessions managed by scripts/start-two-pi-sessions.sh.
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "${1:-}" == --help || "${1:-}" == -h || $# == 1 ]]; then
   exec "$repo_dir/scripts/start-two-pi-sessions.sh" "$@"
