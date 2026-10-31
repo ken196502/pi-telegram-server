@@ -34,22 +34,15 @@ done
 [[ -f "$repo_dir/.env" ]] || { echo "missing $repo_dir/.env" >&2; exit 1; }
 
 # Validate both bindings before starting either session.
-ports=()
 for bot in "$first_bot" "$second_bot"; do
   [[ "$bot" =~ ^[a-zA-Z0-9_]+$ ]] || { echo "invalid bot name: $bot" >&2; exit 1; }
   bot_upper="$(printf '%s' "$bot" | tr '[:lower:]' '[:upper:]')"
-  inbound_url="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_URL=//p" "$repo_dir/.env" | tail -n 1)"
-  port="$(printf '%s' "$inbound_url" | sed -n 's#^[^:]*://[^:/]*:\([0-9][0-9]*\).*$#\1#p')"
-  [[ -n "$port" ]] || {
-    echo "set TELEGRAM_BOT_${bot_upper}_INBOUND_URL with an explicit port in $repo_dir/.env" >&2
+  inbound_token="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN=//p" "$repo_dir/.env" | tail -n 1)"
+  [[ -n "$inbound_token" ]] || {
+    echo "set TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN in $repo_dir/.env (required for WS reverse-register)" >&2
     exit 1
   }
-  ports+=("$port")
 done
-[[ "${ports[0]}" != "${ports[1]}" ]] || {
-  echo "the two bots must use different inbound ports" >&2
-  exit 1
-}
 
 # The host's virtiofs share is not mounted automatically after reboot.
 if ! mountpoint -q "$mount_dir"; then

@@ -90,13 +90,13 @@ npm run send -- --bot beta --to 123456789 --message 'hello from beta'
 
 ## Pi extension and inbound bridge
 
-Set `TELEGRAM_INBOUND_URL` and `INBOUND_WEBHOOK_TOKEN` in the service, plus `TELEGRAM_INBOUND_ALLOWED_SENDERS` (comma-separated Telegram user IDs). The gateway forwards allowed text/caption updates to Pi. Start Pi with:
+Set `TELEGRAM_INBOUND_ALLOWED_SENDERS` (comma-separated Telegram user IDs) in the service. The gateway forwards allowed text/caption updates to Pi. Start Pi with:
 
 ```bash
 pi --extension ./extensions/telegram-mirror.mjs
 ```
 
-With several bots configured every Pi session must be bound to exactly one of them. `scripts/start-pi-session.sh` reads `TELEGRAM_BOT_<NAME>_INBOUND_URL` from `.env` and exports `PI_TELEGRAM_BOT`, `PI_TELEGRAM_INBOUND_PORT` and `PI_TG_TMUX_SS` before starting Pi, so the required variables cannot be forgotten:
+With several bots configured every Pi session must be bound to exactly one of them. `scripts/start-pi-session.sh` verifies that `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN` is set in `.env` and exports `PI_TELEGRAM_BOT` and `PI_TG_TMUX_SS` before starting Pi, so the required variables cannot be forgotten:
 
 ```bash
 scripts/start-pi-session.sh main pi        # bot "main",      tmux session "pi"
@@ -116,14 +116,14 @@ is not mounted (for example, after reboot), the launcher runs
 `sudo mount -t virtiofs share /mnt/share` first; enter your sudo password when
 prompted. The shared `VM` directory must already exist and be writable.
 
-The launcher checks both Pi listeners, starts the gateway in `pi-telegram-gateway` if needed, and waits for both bots to connect. Gateway output goes to `gateway.log`. It respects configured proxy variables and uses the local Mihomo HTTP proxy at `127.0.0.1:7890` when available if no proxy is configured. A failed readiness check exits with an error instead of reporting success.
+The launcher checks that both Pi sessions have registered their WebSocket connections, starts the gateway in `pi-telegram-gateway` if needed, and waits for both bots to connect. Gateway output goes to `gateway.log`. It respects configured proxy variables and uses the local Mihomo HTTP proxy at `127.0.0.1:7890` when available if no proxy is configured. A failed readiness check exits with an error instead of reporting success.
 
 The launcher leaves existing sessions running, including their current workspace. To use different bot names or
 pass Pi arguments to both sessions, run
 `./scripts/start-two-pi-sessions.sh alpha beta [pi args...]`. Each bot needs its
-own `TELEGRAM_BOT_<NAME>_INBOUND_URL` in `.env`, with different ports.
+own `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN` in `.env`.
 
-The extension listens locally for forwarded updates and mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension sends that name with every outbound call, ignores forwarded updates addressed to other bots, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process.
+The extension connects to the gateway WebSocket (`ws://<TELEGRAM_HOST>:<TELEGRAM_PORT>/inbound`) and registers as its bot; the gateway pushes Telegram updates over that connection. It mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension registers as that bot, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process. See `Docs/Inbound-Routing-Redesign-Plan.md` for the full reverse-register design (方案 C).
 
 ## Health and security
 

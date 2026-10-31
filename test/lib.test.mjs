@@ -27,6 +27,7 @@ import {
   normalizeBotName,
   parseBotDefinitions,
   resolveBotConfigs,
+  resolveInboundWsUrl,
 } from "../src/lib.mjs";
 
 describe("Telegram helpers", () => {
@@ -427,6 +428,8 @@ describe("Multi-bot configuration", () => {
       TELEGRAM_WEBHOOK_URL: "https://bot.example.com/telegram/webhook",
       TELEGRAM_WEBHOOK_SECRET: "global-secret",
       TELEGRAM_INBOUND_ALLOWED_SENDERS: "111",
+      TELEGRAM_BOT_ALPHA_INBOUND_TOKEN: "alpha-inbound",
+      TELEGRAM_BOT_BETA_INBOUND_TOKEN: "beta-inbound",
       TELEGRAM_BOT_BETA_WEBHOOK_SECRET: "beta-secret",
       TELEGRAM_BOT_BETA_ALLOWED_SENDERS: "222,333",
       TELEGRAM_BOT_BETA_MESSAGE_LIMIT: "1000",
@@ -435,16 +438,42 @@ describe("Multi-bot configuration", () => {
     assert.equal(bots[0].webhookPath, "/telegram/webhook/alpha");
     assert.equal(bots[0].webhookUrl, "https://bot.example.com/telegram/webhook/alpha");
     assert.equal(bots[0].webhookSecret, "global-secret");
+    assert.equal(bots[0].inboundToken, "alpha-inbound");
     assert.equal(bots[1].webhookSecret, "beta-secret");
+    assert.equal(bots[1].inboundToken, "beta-inbound");
     assert.equal(bots[1].messageLimit, 1000);
     assert.equal(bots[1].allowedSenders.has("222"), true);
     assert.equal(bots[1].allowedSenders.has("111"), false);
   });
 
   it("rejects duplicates and missing tokens", () => {
-    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=1:x,A=2:y" }), /duplicate bot name/);
-    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=" }), /expected name=token/);
+    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=1:x,A=2:y", TELEGRAM_BOT_A_INBOUND_TOKEN: "t", TELEGRAM_BOT_A_INBOUND_TOKEN: "t" }), /duplicate bot name/);
+    assert.throws(() => resolveBotConfigs({ TELEGRAM_BOTS: "a=", TELEGRAM_BOT_A_INBOUND_TOKEN: "t" }), /expected name=token/);
     assert.throws(() => resolveBotConfigs({}), /TELEGRAM_BOT_TOKEN or TELEGRAM_BOTS is required/);
+  });
+
+  it("requires per-bot inbound token in multi-bot mode (R4)", () => {
+    assert.throws(
+      () => resolveBotConfigs({ TELEGRAM_BOTS: "alpha=1:a,beta=2:b", TELEGRAM_BOT_ALPHA_INBOUND_TOKEN: "t" }),
+      /beta" is missing its per-bot inbound token/,
+    );
+  });
+
+  it("allows single-bot config without inbound token (legacy)", () => {
+    const [bot] = resolveBotConfigs({ TELEGRAM_BOT_TOKEN: "1:a" });
+    assert.equal(bot.inboundToken, "");
+  });
+});
+
+describe("resolveInboundWsUrl", () => {
+  it("uses explicit PI_TELEGRAM_INBOUND_WS_URL", () => {
+    assert.equal(resolveInboundWsUrl({ PI_TELEGRAM_INBOUND_WS_URL: "ws://gw:9999/inbound" }), "ws://gw:9999/inbound");
+  });
+  it("derives from TELEGRAM_HOST and TELEGRAM_PORT", () => {
+    assert.equal(resolveInboundWsUrl({ TELEGRAM_HOST: "127.0.0.1", TELEGRAM_PORT: "3093" }), "ws://127.0.0.1:3093/inbound");
+  });
+  it("throws when host is empty", () => {
+    assert.throws(() => resolveInboundWsUrl({ TELEGRAM_HOST: "" }), /TELEGRAM_HOST is empty/);
   });
 });
 

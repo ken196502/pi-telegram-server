@@ -3,7 +3,8 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { configuredBotNames, exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, normalizeBotName, translateInboundSlashCommand } from "../src/lib.mjs";
+import { configuredBotNames, exportMarkdownTablesToHtmlFile, extractMarkdownTables, formatReplyPrompt, normalizeBotName, translateInboundSlashCommand, resolveInboundWsUrl } from "../src/lib.mjs";
+import { connectInboundClient } from "../src/inbound-ws.mjs";
 import { 
   tmuxSessionExists, 
   isTmuxInstalled,
@@ -127,28 +128,9 @@ async function sendStopTyping(settings) {
   await post(settings.url, { to: settings.to, action: "stop_typing", ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token).catch(() => {});
 }
 
-function readJson(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (c) => {
-      body += c;
-      if (body.length > 1024 * 1024) reject(new Error("request body is too large"));
-    });
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(body || "{}"));
-      } catch {
-        reject(new Error("request body must be valid JSON"));
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
 export default function telegramMirror(pi) {
   let settings;
-  let server;
+  let inboundClient;
   let typingInterval = null;
   let typingWatchdog = null;
   let agentRunning = false;
@@ -177,9 +159,7 @@ export default function telegramMirror(pi) {
       bot: env.PI_TELEGRAM_BOT || env.TELEGRAM_BOT || "",
       botToken: env.TELEGRAM_BOT_TOKEN || "",
       apiBase: (env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").replace(/\/$/, ""),
-      inboundHost: env.PI_TELEGRAM_INBOUND_HOST || "127.0.0.1",
-      inboundPort: Number(env.PI_TELEGRAM_INBOUND_PORT || "3094"),
-      inboundPath: env.PI_TELEGRAM_INBOUND_PATH || "/telegram/inbound",
+      inboundWsUrl: env.PI_TELEGRAM_INBOUND_WS_URL || resolveInboundWsUrl(env),
       inboundToken: env.PI_TELEGRAM_INBOUND_TOKEN || env.INBOUND_WEBHOOK_TOKEN || "",
       tmuxSession: env.PI_TG_TMUX_SS || "",
       botNames: configuredBotNames(env),
@@ -554,328 +534,327 @@ export default function telegramMirror(pi) {
     return [];
   }
 
+  // ── Inbound message handler (extracted from the old HTTP server) ──
+  // Receives a parsed payload pushed over the WebSocket from the gateway.
+  // R1: bot identity is enforced at the WS register stage — no more "bot mismatch → 200 + drop".
+  async function handleInboundMessage(payload) {
+    const s = get(process.cwd());
+    try {
+      const message = payload;
+      if (s.bot && message.bot && String(message.bot).toLowerCase() !== s.bot.toLowerCase()) return;
+      if (message.messageId && seen.has(message.messageId)) return;
+      if (message.messageId) seen.add(message.messageId);
+      if (!message.body?.trim()) throw new Error("body is required");
+
+      const trimmedBody = message.body.trim();
+      const isSlashCommand = /^\/[a-zA-Z]/.test(trimmedBody);
+      const isNumberSelection = /^\d+$/.test(trimmedBody);
+
+      // ── Number selection: user sends a number ──
+      if (isNumberSelection) {
+        const number = parseInt(trimmedBody, 10);
+
+        // 1. Model selection menu
+        if (currentModelMenu.length > 0 && (Date.now() - modelMenuSentAt) < MODEL_MENU_STALE_MS) {
+          const idx = number - 1;
+          if (idx >= 0 && idx < currentModelMenu.length) {
+            const chosen = currentModelMenu[idx];
+            currentModelMenu = [];
+            try {
+              await pi.setModel(chosen);
+              await mirror(`✓ Switched model to: \`${chosen.provider}/${chosen.id}\``, s).catch(() => {});
+            } catch (err) {
+              await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
+            }
+            return;
+          }
+        }
+
+        // 2. Terminal captured menu
+        if (currentMenuItems.length > 0 && (Date.now() - lastMenuSentAt) < MENU_STALE_MS) {
+          const index = number - 1;
+          if (index >= 0 && index < currentMenuItems.length) {
+            const selectedItem = currentMenuItems[index];
+            try {
+              selectMenuItem(tmuxTarget(), currentMenuItems, index);
+              lastSelectionTime = Date.now();
+              currentMenuItems = [];
+              await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
+
+              setTimeout(async () => {
+                const newItems = await checkTmuxForMenu(true);
+                if (newItems.length === 0) {
+                  try {
+                    const screenContent = captureTmuxPane(tmuxTarget(), 35);
+                    const preview = screenContent.trim().slice(-500);
+                    if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
+                  } catch {}
+                }
+              }, 2000);
+            } catch (err) {
+              await mirror(`❌ Selection failed: ${err.message}`, s).catch(() => {});
+            }
+            return;
+          }
+        }
+      }
+
+      // ── Menu search: user sends text while model or terminal menu is open ──
+      if (!isSlashCommand && !isNumberSelection) {
+        // Model menu search
+        if (currentModelMenu.length > 0 && (Date.now() - modelMenuSentAt) < MODEL_MENU_STALE_MS) {
+          const searchTerm = trimmedBody.toLowerCase();
+          const matched = currentModelMenu.filter(m =>
+            `${m.provider}/${m.id}`.toLowerCase().includes(searchTerm) ||
+            (m.name && m.name.toLowerCase().includes(searchTerm))
+          );
+          if (matched.length === 1) {
+            const chosen = matched[0];
+            currentModelMenu = [];
+            try {
+              await pi.setModel(chosen);
+              await mirror(`✓ Switched model to: \`${chosen.provider}/${chosen.id}\``, s).catch(() => {});
+            } catch (err) {
+              await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
+            }
+            return;
+          } else if (matched.length > 1) {
+            const lines = [`🤖 Found ${matched.length} models matching "${trimmedBody}":\n`];
+            matched.forEach((m) => {
+              const idx = currentModelMenu.indexOf(m) + 1;
+              lines.push(`${idx}. ${m.id}`);
+            });
+            lines.push(`\n👉 Reply with number to select.`);
+            await mirror(lines.join("\n"), s).catch(() => {});
+            return;
+          }
+        }
+
+        // Terminal menu search
+        if (currentMenuItems.length > 0 && (Date.now() - lastMenuSentAt) < MENU_STALE_MS) {
+          const searchTerm = trimmedBody.toLowerCase();
+          const matchingItems = currentMenuItems.filter(item =>
+            item.text.toLowerCase().includes(searchTerm)
+          );
+
+          if (matchingItems.length === 1) {
+            const selectedItem = matchingItems[0];
+            const index = currentMenuItems.indexOf(selectedItem);
+            try {
+              selectMenuItem(tmuxTarget(), currentMenuItems, index);
+              lastSelectionTime = Date.now();
+              currentMenuItems = [];
+              await mirror(`✓ Selected: ${selectedItem.text}`, s).catch(() => {});
+
+              setTimeout(async () => {
+                const newItems = await checkTmuxForMenu(true);
+                if (newItems.length === 0) {
+                  try {
+                    const screenContent = captureTmuxPane(tmuxTarget(), 35);
+                    const preview = screenContent.trim().slice(-500);
+                    if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
+                  } catch {}
+                }
+              }, 2000);
+            } catch (err) {
+              await mirror(`❌ Selection failed: ${err.message}`, s).catch(() => {});
+            }
+            return;
+          } else if (matchingItems.length > 1) {
+            const lines = [`📋 Found ${matchingItems.length} items matching "${trimmedBody}":\n`];
+            matchingItems.forEach((item) => {
+              const index = currentMenuItems.indexOf(item) + 1;
+              const selectedMark = item.selected ? "✅" : `${index}.`;
+              lines.push(`${selectedMark} ${item.text}`);
+            });
+            lines.push(`\n👉 Reply with the number to select.`);
+            await mirror(lines.join("\n"), s).catch(() => {});
+            return;
+          } else {
+            await mirror(`❌ No items matching "${trimmedBody}". Try a different search term or reply with a number.`, s).catch(() => {});
+            return;
+          }
+        }
+      }
+
+      // ── Determine how to forward the message ──
+      const EXTENSION_COMMANDS = new Set([
+        "/clear", "/compact_session", "/abort", "/stop", "/status", "/help", "/menu", "/commands", "/model"
+      ]);
+      const commandName = trimmedBody.split(/\s+/)[0].toLowerCase();
+      const isRegisteredCommand = EXTENSION_COMMANDS.has(commandName) ||
+        ["/new", "/compact"].includes(commandName);
+
+      startTyping();
+      currentMenuItems = [];
+      currentModelMenu = [];
+      try {
+
+        // ── Native model command handling ──
+        if (commandName === "/model") {
+          const arg = trimmedBody.replace(/^\/model\s*/i, "").trim();
+          const availableModels = latestCtx?.modelRegistry?.getAvailable?.() ||
+            latestCtx?.modelRegistry?.getAvailableSnapshot?.() || [];
+          const currentModel = latestCtx?.model;
+          const currentStr = currentModel ? `${currentModel.provider}/${currentModel.id}` : "unknown";
+
+          if (arg) {
+            const lower = arg.toLowerCase();
+            let matches = availableModels.filter(m =>
+              `${m.provider}/${m.id}`.toLowerCase() === lower ||
+              m.id.toLowerCase() === lower
+            );
+            if (matches.length === 0) {
+              matches = availableModels.filter(m =>
+                `${m.provider}/${m.id}`.toLowerCase().includes(lower) ||
+                (m.name && m.name.toLowerCase().includes(lower))
+              );
+            }
+
+            if (matches.length === 1) {
+              const target = matches[0];
+              try {
+                await pi.setModel(target);
+                await mirror(`✓ Switched model to: \`${target.provider}/${target.id}\``, s).catch(() => {});
+              } catch (err) {
+                await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
+              }
+              return;
+            } else if (matches.length > 1) {
+              currentModelMenu = matches;
+              modelMenuSentAt = Date.now();
+              const lines = [
+                `🤖 **Multiple models match "${arg}":**`,
+                `Current: \`${currentStr}\`\n`,
+              ];
+              matches.forEach((m, i) => {
+                const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
+                lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
+              });
+              lines.push(`\n👉 Reply with number to select.`);
+              await mirror(lines.join("\n"), s).catch(() => {});
+              return;
+            } else {
+              await mirror(`❌ No model matching "${arg}" found. Use \`/model\` to view available models.`, s).catch(() => {});
+              return;
+            }
+          } else {
+            const modelsToShow = latestCtx?.scopedModels?.length > 0
+              ? latestCtx.scopedModels.map(sm => sm.model)
+              : availableModels;
+
+            currentModelMenu = modelsToShow;
+            modelMenuSentAt = Date.now();
+
+            const lines = [
+              `🤖 **Available Models** (${modelsToShow.length} total)`,
+              `Current: \`${currentStr}\`\n`,
+            ];
+            modelsToShow.forEach((m, i) => {
+              const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
+              lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
+            });
+            lines.push(`\n👉 Reply with a number or name to switch.`);
+            await mirror(lines.join("\n"), s).catch(() => {});
+            return;
+          }
+        }
+
+        if (isSlashCommand && !isRegisteredCommand) {
+          // TUI command (e.g. /theme, /settings) → send to tmux terminal directly
+          if (!isTmuxInstalled()) {
+            await mirror(TMUX_NOT_INSTALLED_MSG, s).catch(() => {});
+            return;
+          }
+          const tmux = tmuxTarget();
+          if (tmuxSessionExists(tmux)) {
+            const screenBefore = captureTmuxPane(tmux, 35);
+
+            sendTmuxText(tmux, trimmedBody);
+            sendTmuxKey(tmux, "Enter");
+
+            setTimeout(async () => {
+              try {
+                const menuItems = await checkTmuxForMenu(true);
+                if (menuItems.length === 0) {
+                  const screenAfter = captureTmuxPane(tmuxTarget(), 35);
+                  const beforeLines = new Set(screenBefore.split('\n').map(l => l.trim()));
+                  const afterLines = screenAfter.split('\n');
+                  const newLines = afterLines.filter(line => {
+                    const trimmed = line.trim();
+                    return trimmed && !beforeLines.has(trimmed) &&
+                           !trimmed.startsWith('$') && !trimmed.startsWith('#') &&
+                           !trimmed.includes("Working");
+                  });
+
+                  if (newLines.length > 0) {
+                    const output = newLines.join('\n').trim();
+                    const preview = output.slice(-1500).trim();
+                    await mirror(`📄 Output of \`${trimmedBody}\`:\n\n${preview}`, s).catch(() => {});
+                  } else {
+                    await mirror(`✓ Command \`${trimmedBody}\` sent to Pi.`, s).catch(() => {});
+                  }
+                }
+              } catch (e) {
+                console.error("Error capturing tmux output:", e.message);
+              }
+            }, 2000);
+          }
+        } else if (isSlashCommand) {
+          // Registered extension command → send through Pi's command system
+          const commandText = translateInboundSlashCommand(trimmedBody);
+          await pi.sendUserMessage(commandText, {
+            expandPromptTemplates: true,
+            deliverAs: "followUp",
+          });
+        } else {
+          // Normal message → send to AI agent
+          const promptText = formatReplyPrompt(message.body, message.replyTo);
+          await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
+        }
+      } finally {
+        // A command that never starts an agent run must not leave Telegram stuck on "typing…".
+        if (!agentRunning) stopTyping();
+      }
+    } catch (e) {
+      stopTyping();
+      console.error("inbound message handler error:", e.message);
+    }
+  }
+
   pi.on("session_start", (_event, ctx) => {
     latestCtx = ctx;
     const s = get(ctx.cwd);
     const botError = botSelectionError(s);
     if (botError) return ctx.ui.notify(botError, "error");
     if (!s.inboundToken) return ctx.ui.notify("Telegram inbound is disabled: set PI_TELEGRAM_INBOUND_TOKEN or INBOUND_WEBHOOK_TOKEN", "warning");
+    if (!s.bot) return ctx.ui.notify("Telegram inbound requires PI_TELEGRAM_BOT to be set (which bot this session serves)", "error");
 
-    if (server) {
-      try { server.close(); } catch {}
-      server = undefined;
+    // Close any previous inbound client before starting a new one.
+    if (inboundClient) {
+      try { inboundClient.close(); } catch {}
+      inboundClient = undefined;
     }
 
-    server = http.createServer(async (req, res) => {
-      const url = new URL(req.url || "/", `http://${s.inboundHost}`);
-      if (req.method !== "POST" || url.pathname !== s.inboundPath) {
-        res.writeHead(404);
-        return res.end();
-      }
-      const auth = String(req.headers.authorization || "");
-      const token = auth.startsWith("Bearer ") ? auth.slice(7) : String(req.headers["x-webhook-token"] || "");
-      if (token !== s.inboundToken) {
-        res.writeHead(401);
-        return res.end();
-      }
-      try {
-        const message = await readJson(req);
-        if (s.bot && message.bot && String(message.bot).toLowerCase() !== s.bot.toLowerCase()) return res.end('{"ok":true}');
-        if (message.messageId && seen.has(message.messageId)) return res.end('{"ok":true}');
-        if (message.messageId) seen.add(message.messageId);
-        if (!message.body?.trim()) throw new Error("body is required");
-
-        const trimmedBody = message.body.trim();
-        const isSlashCommand = /^\/[a-zA-Z]/.test(trimmedBody);
-        const isNumberSelection = /^\d+$/.test(trimmedBody);
-
-        // ── Number selection: user sends a number ──
-        if (isNumberSelection) {
-          const number = parseInt(trimmedBody, 10);
-
-          // 1. Model selection menu
-          if (currentModelMenu.length > 0 && (Date.now() - modelMenuSentAt) < MODEL_MENU_STALE_MS) {
-            const idx = number - 1;
-            if (idx >= 0 && idx < currentModelMenu.length) {
-              const chosen = currentModelMenu[idx];
-              currentModelMenu = [];
-              try {
-                await pi.setModel(chosen);
-                await mirror(`✓ Switched model to: \`${chosen.provider}/${chosen.id}\``, s).catch(() => {});
-              } catch (err) {
-                await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
-              }
-              return res.end('{"ok":true}');
-            }
-          }
-
-          // 2. Terminal captured menu
-          if (currentMenuItems.length > 0 && (Date.now() - lastMenuSentAt) < MENU_STALE_MS) {
-            const index = number - 1;
-            if (index >= 0 && index < currentMenuItems.length) {
-              const selectedItem = currentMenuItems[index];
-              try {
-                selectMenuItem(tmuxTarget(), currentMenuItems, index);
-                lastSelectionTime = Date.now();
-                currentMenuItems = [];
-                await mirror(`✓ Selected [${number}]: ${selectedItem.text}`, s).catch(() => {});
-
-                setTimeout(async () => {
-                  const newItems = await checkTmuxForMenu(true);
-                  if (newItems.length === 0) {
-                    try {
-                      const screenContent = captureTmuxPane(tmuxTarget(), 35);
-                      const preview = screenContent.trim().slice(-500);
-                      if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
-                    } catch {}
-                  }
-                }, 2000);
-              } catch (err) {
-                await mirror(`❌ Selection failed: ${err.message}`, s).catch(() => {});
-              }
-              return res.end('{"ok":true}');
-            }
-          }
-        }
-
-        // ── Menu search: user sends text while model or terminal menu is open ──
-        if (!isSlashCommand && !isNumberSelection) {
-          // Model menu search
-          if (currentModelMenu.length > 0 && (Date.now() - modelMenuSentAt) < MODEL_MENU_STALE_MS) {
-            const searchTerm = trimmedBody.toLowerCase();
-            const matched = currentModelMenu.filter(m =>
-              `${m.provider}/${m.id}`.toLowerCase().includes(searchTerm) ||
-              (m.name && m.name.toLowerCase().includes(searchTerm))
-            );
-            if (matched.length === 1) {
-              const chosen = matched[0];
-              currentModelMenu = [];
-              try {
-                await pi.setModel(chosen);
-                await mirror(`✓ Switched model to: \`${chosen.provider}/${chosen.id}\``, s).catch(() => {});
-              } catch (err) {
-                await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
-              }
-              return res.end('{"ok":true}');
-            } else if (matched.length > 1) {
-              const lines = [`🤖 Found ${matched.length} models matching "${trimmedBody}":\n`];
-              matched.forEach((m) => {
-                const idx = currentModelMenu.indexOf(m) + 1;
-                lines.push(`${idx}. ${m.id}`);
-              });
-              lines.push(`\n👉 Reply with number to select.`);
-              await mirror(lines.join("\n"), s).catch(() => {});
-              return res.end('{"ok":true}');
-            }
-          }
-
-          // Terminal menu search
-          if (currentMenuItems.length > 0 && (Date.now() - lastMenuSentAt) < MENU_STALE_MS) {
-            const searchTerm = trimmedBody.toLowerCase();
-            const matchingItems = currentMenuItems.filter(item =>
-              item.text.toLowerCase().includes(searchTerm)
-            );
-
-            if (matchingItems.length === 1) {
-              const selectedItem = matchingItems[0];
-              const index = currentMenuItems.indexOf(selectedItem);
-              try {
-                selectMenuItem(tmuxTarget(), currentMenuItems, index);
-                lastSelectionTime = Date.now();
-                currentMenuItems = [];
-                await mirror(`✓ Selected: ${selectedItem.text}`, s).catch(() => {});
-
-                setTimeout(async () => {
-                  const newItems = await checkTmuxForMenu(true);
-                  if (newItems.length === 0) {
-                    try {
-                      const screenContent = captureTmuxPane(tmuxTarget(), 35);
-                      const preview = screenContent.trim().slice(-500);
-                      if (preview) await mirror(`📄 Result:\n\`\`\`\n${preview}\n\`\`\``, s).catch(() => {});
-                    } catch {}
-                  }
-                }, 2000);
-              } catch (err) {
-                await mirror(`❌ Selection failed: ${err.message}`, s).catch(() => {});
-              }
-              return res.end('{"ok":true}');
-            } else if (matchingItems.length > 1) {
-              const lines = [`📋 Found ${matchingItems.length} items matching "${trimmedBody}":\n`];
-              matchingItems.forEach((item) => {
-                const index = currentMenuItems.indexOf(item) + 1;
-                const selectedMark = item.selected ? "✅" : `${index}.`;
-                lines.push(`${selectedMark} ${item.text}`);
-              });
-              lines.push(`\n👉 Reply with the number to select.`);
-              await mirror(lines.join("\n"), s).catch(() => {});
-              return res.end('{"ok":true}');
-            } else {
-              await mirror(`❌ No items matching "${trimmedBody}". Try a different search term or reply with a number.`, s).catch(() => {});
-              return res.end('{"ok":true}');
-            }
-          }
-        }
-
-        // ── Determine how to forward the message ──
-        const EXTENSION_COMMANDS = new Set([
-          "/clear", "/compact_session", "/abort", "/stop", "/status", "/help", "/menu", "/commands", "/model"
-        ]);
-        const commandName = trimmedBody.split(/\s+/)[0].toLowerCase();
-        const isRegisteredCommand = EXTENSION_COMMANDS.has(commandName) ||
-          ["/new", "/compact"].includes(commandName);
-
-        startTyping();
-        currentMenuItems = [];
-        currentModelMenu = [];
-        try {
-
-          // ── Native model command handling ──
-          if (commandName === "/model") {
-            const arg = trimmedBody.replace(/^\/model\s*/i, "").trim();
-            const availableModels = latestCtx?.modelRegistry?.getAvailable?.() ||
-              latestCtx?.modelRegistry?.getAvailableSnapshot?.() || [];
-            const currentModel = latestCtx?.model;
-            const currentStr = currentModel ? `${currentModel.provider}/${currentModel.id}` : "unknown";
-
-            if (arg) {
-              const lower = arg.toLowerCase();
-              let matches = availableModels.filter(m =>
-                `${m.provider}/${m.id}`.toLowerCase() === lower ||
-                m.id.toLowerCase() === lower
-              );
-              if (matches.length === 0) {
-                matches = availableModels.filter(m =>
-                  `${m.provider}/${m.id}`.toLowerCase().includes(lower) ||
-                  (m.name && m.name.toLowerCase().includes(lower))
-                );
-              }
-
-              if (matches.length === 1) {
-                const target = matches[0];
-                try {
-                  await pi.setModel(target);
-                  await mirror(`✓ Switched model to: \`${target.provider}/${target.id}\``, s).catch(() => {});
-                } catch (err) {
-                  await mirror(`❌ Failed to switch model: ${err.message}`, s).catch(() => {});
-                }
-                return res.end('{"ok":true}');
-              } else if (matches.length > 1) {
-                currentModelMenu = matches;
-                modelMenuSentAt = Date.now();
-                const lines = [
-                  `🤖 **Multiple models match "${arg}":**`,
-                  `Current: \`${currentStr}\`\n`,
-                ];
-                matches.forEach((m, i) => {
-                  const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
-                  lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
-                });
-                lines.push(`\n👉 Reply with number to select.`);
-                await mirror(lines.join("\n"), s).catch(() => {});
-                return res.end('{"ok":true}');
-              } else {
-                await mirror(`❌ No model matching "${arg}" found. Use \`/model\` to view available models.`, s).catch(() => {});
-                return res.end('{"ok":true}');
-              }
-            } else {
-              const modelsToShow = latestCtx?.scopedModels?.length > 0
-                ? latestCtx.scopedModels.map(sm => sm.model)
-                : availableModels;
-
-              currentModelMenu = modelsToShow;
-              modelMenuSentAt = Date.now();
-
-              const lines = [
-                `🤖 **Available Models** (${modelsToShow.length} total)`,
-                `Current: \`${currentStr}\`\n`,
-              ];
-              modelsToShow.forEach((m, i) => {
-                const isCur = currentModel && m.provider === currentModel.provider && m.id === currentModel.id;
-                lines.push(`${isCur ? "✅" : `${i + 1}.`} ${m.id}`);
-              });
-              lines.push(`\n👉 Reply with a number or name to switch.`);
-              await mirror(lines.join("\n"), s).catch(() => {});
-              return res.end('{"ok":true}');
-            }
-          }
-
-          if (isSlashCommand && !isRegisteredCommand) {
-            // TUI command (e.g. /theme, /settings) → send to tmux terminal directly
-            if (!isTmuxInstalled()) {
-              await mirror(TMUX_NOT_INSTALLED_MSG, s).catch(() => {});
-              return res.end('{"ok":true}');
-            }
-            const tmux = tmuxTarget();
-            if (tmuxSessionExists(tmux)) {
-              const screenBefore = captureTmuxPane(tmux, 35);
-
-              sendTmuxText(tmux, trimmedBody);
-              sendTmuxKey(tmux, "Enter");
-
-              setTimeout(async () => {
-                try {
-                  const menuItems = await checkTmuxForMenu(true);
-                  if (menuItems.length === 0) {
-                    const screenAfter = captureTmuxPane(tmuxTarget(), 35);
-                    const beforeLines = new Set(screenBefore.split('\n').map(l => l.trim()));
-                    const afterLines = screenAfter.split('\n');
-                    const newLines = afterLines.filter(line => {
-                      const trimmed = line.trim();
-                      return trimmed && !beforeLines.has(trimmed) &&
-                             !trimmed.startsWith('$') && !trimmed.startsWith('#') &&
-                             !trimmed.includes("Working");
-                    });
-
-                    if (newLines.length > 0) {
-                      const output = newLines.join('\n').trim();
-                      const preview = output.slice(-1500).trim();
-                      await mirror(`📄 Output of \`${trimmedBody}\`:\n\n${preview}`, s).catch(() => {});
-                    } else {
-                      await mirror(`✓ Command \`${trimmedBody}\` sent to Pi.`, s).catch(() => {});
-                    }
-                  }
-                } catch (e) {
-                  console.error("Error capturing tmux output:", e.message);
-                }
-              }, 2000);
-            }
-          } else if (isSlashCommand) {
-            // Registered extension command → send through Pi's command system
-            const commandText = translateInboundSlashCommand(trimmedBody);
-            await pi.sendUserMessage(commandText, {
-              expandPromptTemplates: true,
-              deliverAs: "followUp",
-            });
-          } else {
-            // Normal message → send to AI agent
-            const promptText = formatReplyPrompt(message.body, message.replyTo);
-            await pi.sendUserMessage(`[Telegram ${message.senderId || message.chatId || "unknown"}]\n${promptText}`, { deliverAs: "followUp" });
-          }
-
-          res.end('{"ok":true}');
-        } finally {
-          // A command that never starts an agent run must not leave Telegram stuck on "typing…".
-          if (!agentRunning) stopTyping();
-        }
-      } catch (e) {
-        stopTyping();
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: e.message }));
-      }
+    // 方案 C: connect to the gateway WebSocket and register as our bot.
+    // The gateway pushes Telegram updates over this connection; no HTTP port is listened on.
+    inboundClient = connectInboundClient({
+      url: s.inboundWsUrl,
+      bot: s.bot,
+      token: s.inboundToken,
+      onMessage: (payload) => { void handleInboundMessage(payload); },
+      onOpen: () => ctx.ui.notify(`Telegram inbound connected (WS → ${s.bot})`),
+      onClose: (reason) => ctx.ui.notify(`Telegram inbound disconnected: ${reason}`, "warning"),
+      log: (level, message, fields) => console.error(`[inbound-ws ${level}] ${message}`, fields ? JSON.stringify(fields) : ""),
     });
-
-    server.on("error", (err) => {
-      ctx.ui.notify(`Telegram inbound listener error: ${err.message}`, "error");
-    });
-
-    server.listen(s.inboundPort, s.inboundHost, () => ctx.ui.notify(`Telegram inbound listener: http://${s.inboundHost}:${s.inboundPort}${s.inboundPath}`));
   });
 
   pi.on("session_shutdown", () => {
     agentRunning = false;
     stopTyping();
     currentMenuItems = [];
-    server?.close();
+    inboundClient?.close();
+    inboundClient = undefined;
     server = undefined;
   });
 

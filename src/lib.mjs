@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+export { resolveInboundWsUrl } from "./inbound-ws.mjs";
 
 export function loadEnvFile(filePath, target = process.env) {
   if (!fs.existsSync(filePath)) return target;
@@ -82,7 +83,7 @@ export function resolveBotConfigs(env = process.env) {
 
   const multiple = definitions.length > 1;
   const seen = new Set();
-  return definitions.map((definition) => {
+  const configs = definitions.map((definition) => {
     const name = normalizeBotName(definition.name);
     if (!name) throw new Error("bot name is required");
     if (seen.has(name)) throw new Error(`duplicate bot name: ${name}`);
@@ -101,6 +102,14 @@ export function resolveBotConfigs(env = process.env) {
     const parseMode = pick("PARSE_MODE", env.TELEGRAM_PARSE_MODE || "HTML").toUpperCase();
     const webhookPath = `/${String(pick("WEBHOOK_PATH", multiple ? `${globalWebhookPath}/${name}` : globalWebhookPath)).replace(/^\/+/, "")}`;
 
+    const inboundToken = pick("INBOUND_TOKEN", env.INBOUND_WEBHOOK_TOKEN || "");
+    // R4: in multi-bot mode every bot must have its own inbound token — never
+    // silently fall back to the global one, which would let any Pi session
+    // impersonate any bot.
+    if (multiple && !inboundToken) {
+      throw new Error(`bot "${name}" is missing its per-bot inbound token; set TELEGRAM_BOT_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_INBOUND_TOKEN (required in multi-bot mode)`);
+    }
+
     return {
       name,
       token,
@@ -108,14 +117,14 @@ export function resolveBotConfigs(env = process.env) {
       webhookPath,
       webhookUrl: pick("WEBHOOK_URL", globalWebhookUrl ? (multiple ? `${globalWebhookUrl}/${name}` : globalWebhookUrl) : ""),
       webhookSecret: pick("WEBHOOK_SECRET", env.TELEGRAM_WEBHOOK_SECRET || ""),
-      inboundUrl: pick("INBOUND_URL", env.TELEGRAM_INBOUND_URL || ""),
-      inboundToken: pick("INBOUND_TOKEN", env.INBOUND_WEBHOOK_TOKEN || ""),
+      inboundToken,
       allowedSenders: parseAllowedSenders(pick("ALLOWED_SENDERS", env.TELEGRAM_INBOUND_ALLOWED_SENDERS || "")),
       polling: /^(1|true|yes)$/i.test(pick("POLLING", env.TELEGRAM_POLLING || "")),
       parseMode: parseMode === "MARKDOWNV2" ? "MARKDOWNV2" : "HTML",
       messageLimit,
     };
   });
+  return configs;
 }
 
 /**

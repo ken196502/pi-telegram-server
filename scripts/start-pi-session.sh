@@ -3,9 +3,9 @@
 #
 #   scripts/start-pi-session.sh <bot-name> <tmux-session> [extra pi args...]
 #
-# The inbound port is read from TELEGRAM_BOT_<NAME>_INBOUND_URL in .env, so a
-# session can never silently start without PI_TELEGRAM_BOT (the extension
-# refuses to run in multi-bot mode without it).
+# The Pi extension connects to the gateway WebSocket (方案 C) and registers as
+# <bot-name>. No inbound HTTP port is needed; PI_TELEGRAM_BOT must be set so
+# the extension knows which bot to register as.
 set -euo pipefail
 
 usage() {
@@ -23,22 +23,17 @@ env_file="$repo_dir/.env"
 [ -f "$env_file" ] || { echo "missing $env_file" >&2; exit 1; }
 
 bot_upper="$(printf '%s' "$bot" | tr '[:lower:]' '[:upper:]')"
-inbound_url="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_URL=//p" "$env_file" | tail -n 1)"
-[ -n "$inbound_url" ] || {
-  echo "TELEGRAM_BOT_${bot_upper}_INBOUND_URL is not set in $env_file" >&2
+# 方案 C: no inbound URL/port — the extension derives the WS URL from TELEGRAM_HOST/PORT.
+# We only verify that a per-bot inbound token exists so the session can authenticate.
+inbound_token="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN=//p" "$env_file" | tail -n 1)"
+[ -n "$inbound_token" ] || {
+  echo "TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN is not set in $env_file" >&2
   exit 1
 }
 
-inbound_port="$(printf '%s' "$inbound_url" | sed -n 's#^[^:]*://[^:/]*:\([0-9][0-9]*\).*$#\1#p')"
-[ -n "$inbound_port" ] || {
-  echo "cannot read an explicit port from $inbound_url" >&2
-  exit 1
-}
-
-echo "starting Pi for bot '$bot' on 127.0.0.1:$inbound_port (tmux session '$tmux_session')" >&2
+echo "starting Pi for bot '$bot' (WS reverse-register → gateway, tmux session '$tmux_session')" >&2
 
 export PI_TELEGRAM_BOT="$bot"
-export PI_TELEGRAM_INBOUND_PORT="$inbound_port"
 export PI_TG_TMUX_SS="$tmux_session"
 
 exec pi --extension "$repo_dir/extensions/telegram-mirror.mjs" "$@"

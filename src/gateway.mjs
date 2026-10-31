@@ -4,6 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import undici from "undici";
 import { loadEnvFile, toTelegramChatId, splitMessage, guessMimeType, isAllowedSender, markdownToMarkdownV2, markdownToHtml, formatJsonForTelegram, extractReplyInfo, resolveBotConfigs, normalizeBotName, matchSensitiveFile } from "./lib.mjs";
+import { createInboundHub } from "./inbound-ws.mjs";
 
 const { FormData: UndiciFormData, ProxyAgent, fetch: undiciFetch } = undici;
 
@@ -21,6 +22,7 @@ const bots = new Map(resolveBotConfigs(process.env).map((botConfig) => [botConfi
   sent: 0,
   received: 0,
   forwarded: 0,
+  dropped: 0,
   lastSentAt: null,
   lastReceivedAt: null,
   typing: new Map(),
@@ -28,6 +30,13 @@ const bots = new Map(resolveBotConfigs(process.env).map((botConfig) => [botConfi
 const defaultBot = bots.values().next().value;
 const startedAt = Date.now();
 const seenUpdates = new Set();
+
+// Inbound WebSocket hub: Pi sessions connect and register by bot name.
+// Replaces the old per-bot HTTP port forwarding (方案 C).
+const inboundHub = createInboundHub({
+  resolveBotToken: (botName) => bots.get(botName)?.config?.inboundToken,
+  log,
+});
 const api = (bot, method) => bot.config.apiBase + "/bot" + bot.config.token + "/" + method;
 function resolveBot(value) {
   const requested = value === undefined || value === null ? "" : String(value).trim();
@@ -242,9 +251,15 @@ async function handleOutbound(req, res, botName) {
   catch (e) { sendJson(res, e?.statusCode || (bot.status === "connected" ? 400 : 503), { ok: false, error: e.message }); }
 }
 async function forwardInbound(bot, payload) {
-  if (!bot.config.inboundUrl || !bot.config.inboundToken) return;
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10000);
-  try { const response = await proxyFetch(bot.config.inboundUrl, { method: "POST", headers: { authorization: "Bearer " + bot.config.inboundToken, "content-type": "application/json" }, body: JSON.stringify(payload), signal: controller.signal }); if (!response.ok) throw new Error("HTTP " + response.status + ": " + await response.text()); bot.forwarded += 1; } finally { clearTimeout(timer); }
+  // 方案 C: push the update over the WebSocket to the registered Pi session.
+  // No HTTP port forwarding; no silent success on missing connection.
+  const ok = inboundHub.send(bot.config.name, payload);
+  if (!ok) {
+    bot.dropped += 1;
+    log("warn", "inbound update dropped: no registered Pi connection", { bot: bot.config.name, messageId: payload.messageId });
+  } else {
+    bot.forwarded += 1;
+  }
 }
 function updateMessage(update) { return update?.message || update?.edited_message || update?.channel_post || update?.edited_channel_post || null; }
 function processUpdate(bot, update) {
@@ -257,7 +272,7 @@ function processUpdate(bot, update) {
     if (chatId !== undefined && isAllowedSender(senderId, bot.config.allowedSenders)) {
       bot.received += 1;
       bot.lastReceivedAt = new Date().toISOString();
-      const canForward = Boolean(bot.config.inboundUrl && bot.config.inboundToken);
+      const canForward = Boolean(bot.config.inboundToken);
       if (canForward) startTypingKeepalive(bot, String(chatId));
       const replyTo = extractReplyInfo(message);
       void forwardInbound(bot, {
@@ -315,7 +330,8 @@ function startHttp() {
         status: connected === entries.length ? "connected" : connected ? "degraded" : "disconnected",
         webhookPath: bots.size === 1 ? defaultBot.config.webhookPath : null,
         defaultBot: bots.size === 1 ? defaultBot.config.name : null,
-        inboundEnabled: entries.some((b) => Boolean(b.config.inboundUrl && b.config.inboundToken)),
+        inboundEnabled: entries.some((b) => Boolean(b.config.inboundToken)),
+        inboundRegistered: inboundHub.registeredBots(),
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
         sent: entries.reduce((n, b) => n + b.sent, 0),
         received: entries.reduce((n, b) => n + b.received, 0),
@@ -325,7 +341,9 @@ function startHttp() {
         bots: Object.fromEntries(entries.map((b) => [b.config.name, {
           status: b.status,
           webhookPath: b.config.webhookPath,
-          inboundEnabled: Boolean(b.config.inboundUrl && b.config.inboundToken),
+          inboundEnabled: Boolean(b.config.inboundToken),
+          inboundConnected: inboundHub.hasBot(b.config.name),
+          dropped: b.dropped || 0,
           sent: b.sent,
           received: b.received,
           forwarded: b.forwarded,
@@ -349,7 +367,10 @@ function startHttp() {
   log("warn", "multiple bots configured; outbound requests must name a bot and each Pi session must set PI_TELEGRAM_BOT", { bots: [...bots.keys()] });
 }
 
-server.listen(config.port, config.host, () => log("info", "Telegram HTTP service listening", { host: config.host, port: config.port, bots: [...bots.keys()] }));
+server.listen(config.port, config.host, () => {
+  inboundHub.attachToServer(server, "/inbound");
+  log("info", "Telegram HTTP service listening", { host: config.host, port: config.port, bots: [...bots.keys()], inboundWsPath: "/inbound" });
+});
 }
 async function startBot(bot) {
   try {
@@ -394,7 +415,7 @@ async function start() {
   startHttp();
   await Promise.all([...bots.values()].map(startBot));
 }
-process.on("SIGINT", () => process.exit(0)); process.on("SIGTERM", () => process.exit(0));
+process.on("SIGINT", () => { inboundHub.closeAll(); process.exit(0); }); process.on("SIGTERM", () => { inboundHub.closeAll(); process.exit(0); });
 await start();
 
 export { sendText, sendDocument, sendChatAction, handleTelegramWebhook, resolveBot };
