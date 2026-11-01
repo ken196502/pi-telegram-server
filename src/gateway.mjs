@@ -247,7 +247,22 @@ async function handleOutbound(req, res, botName) {
 
   const message = body?.message ?? body?.text ?? body?.body ?? ""; const filePath = body?.filePath ?? body?.file ?? body?.path;
   if ((typeof message !== "string" || !message.trim()) && (typeof filePath !== "string" || !filePath.trim())) return sendJson(res, 400, { ok: false, error: "message or filePath is required" });
-  try { const result = filePath ? await sendDocument(bot, to, filePath, body?.fileName, body?.mimetype ?? body?.mimeType, message) : await sendText(bot, to, message); sendJson(res, 200, { ok: true, ...result }); }
+  try {
+    const result = filePath ? await sendDocument(bot, to, filePath, body?.fileName, body?.mimetype ?? body?.mimeType, message) : await sendText(bot, to, message);
+    if (body?.notifyPi && message && typeof message === "string" && message.trim()) {
+      void forwardInbound(bot, {
+        type: "telegram_message",
+        bot: bot.config.name,
+        messageId: "inbound-alert:" + Date.now() + ":" + Math.random().toString(36).slice(2, 8),
+        chatId: String(to || "system"),
+        senderId: String(to || "system"),
+        body: message,
+        replyTo: null,
+        timestamp: Math.floor(Date.now() / 1000)
+      }).catch((e) => log("warn", "notifyPi forward failed", { bot: bot.config.name, error: e.message }));
+    }
+    sendJson(res, 200, { ok: true, ...result });
+  }
   catch (e) { sendJson(res, e?.statusCode || (bot.status === "connected" ? 400 : 503), { ok: false, error: e.message }); }
 }
 async function forwardInbound(bot, payload) {

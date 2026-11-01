@@ -90,9 +90,6 @@ wait_ready() {
   return 1
 }
 
-# A session may exist even though Pi failed to load its extension.
-wait_ready inbound "both Pi inbound listeners"
-
 if ! node "$repo_dir/scripts/check-telegram-ready.mjs" listening "$first_bot" "$second_bot"; then
   if tmux has-session -t '=pi-telegram-gateway' 2>/dev/null; then
     echo "Gateway tmux session exists but its HTTP service is unavailable; inspect it with tmux attach -t pi-telegram-gateway" >&2
@@ -116,6 +113,9 @@ if ! node "$repo_dir/scripts/check-telegram-ready.mjs" listening "$first_bot" "$
   tmux new-session -d -s pi-telegram-gateway -c "$repo_dir" "exec $gateway_command >>$gateway_log 2>&1"
   echo "Started Telegram gateway (log: $repo_dir/gateway.log)"
 fi
+# WebSocket registration requires the gateway to be listening first. A session
+# may exist even though Pi failed to load or authenticate its extension.
+wait_ready inbound "both Pi inbound connections"
 wait_ready connected "both bots to connect to Telegram"
 echo "Both Pi sessions and Telegram bots are ready."
 echo "Attach with: tmux attach -t pi  (or: tmux attach -t pi2)"

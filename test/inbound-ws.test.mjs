@@ -209,6 +209,48 @@ describe("connectInboundClient", () => {
     assert.ok(closed.length >= 1, "should have closed with error reason");
     client.close();
   });
+
+  it("still reports unexpected disconnects", async (t) => {
+    const socketReady = new Promise((resolve) => gateway.wss.once("connection", resolve));
+    let registered;
+    const ready = new Promise((resolve) => { registered = resolve; });
+    let disconnected;
+    const closed = new Promise((resolve) => { disconnected = resolve; });
+    const client = connectInboundClient({
+      url: wsUrl(gateway.port), bot: "main", token: TOKEN_MAIN,
+      onOpen: registered, onClose: disconnected, WsImpl: WebSocket,
+    });
+    t.after(() => client.close());
+    await ready;
+    const socket = await socketReady;
+    socket.close(1001, "gateway restart");
+    assert.match(await closed, /connection closed/);
+    assert.equal(client.isOpen, false);
+  });
+
+  it("ignores late socket events after intentional close", () => {
+    let socket;
+    const callbacks = [];
+    class DelayedSocket {
+      constructor() { socket = this; this.OPEN = 1; this.readyState = 0; }
+      close() { this.readyState = 3; }
+      send() { callbacks.push("send"); }
+    }
+    const client = connectInboundClient({
+      url: "ws://test/inbound", bot: "main", token: TOKEN_MAIN,
+      onMessage: () => callbacks.push("message"), onOpen: () => callbacks.push("open"),
+      onClose: () => callbacks.push("close"), log: () => {}, WsImpl: DelayedSocket,
+    });
+    client.close();
+    socket.readyState = socket.OPEN;
+    socket.onopen();
+    socket.onmessage({ data: JSON.stringify({ type: "registered" }) });
+    socket.onmessage({ data: JSON.stringify({ type: "telegram_message", body: "late" }) });
+    socket.onerror(new Error("late error"));
+    socket.onclose({ code: 1000 });
+    assert.deepEqual(callbacks, []);
+    assert.equal(client.isOpen, false);
+  });
 });
 
 describe("resolveInboundWsUrl", () => {

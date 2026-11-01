@@ -152,17 +152,21 @@ export default function telegramMirror(pi) {
   const get = (cwd) => {
     if (settings) return settings;
     const env = { ...readDotEnv(cwd), ...process.env };
+    const botNames = configuredBotNames(env);
+    const bot = normalizeBotName(env.PI_TELEGRAM_BOT || env.TELEGRAM_BOT || "");
+    const botPrefix = `TELEGRAM_BOT_${bot.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
     settings = {
       url: env.PI_TELEGRAM_WEBHOOK_URL || env.TELEGRAM_WEBHOOK_URL || `http://${env.TELEGRAM_HOST || "127.0.0.1"}:${env.TELEGRAM_PORT || "3093"}/webhook`,
       token: env.PI_TELEGRAM_WEBHOOK_TOKEN || env.TELEGRAM_WEBHOOK_TOKEN || env.WEBHOOK_TOKEN || "",
       to: env.PI_TELEGRAM_TO || env.TELEGRAM_TO || "",
-      bot: env.PI_TELEGRAM_BOT || env.TELEGRAM_BOT || "",
+      bot,
       botToken: env.TELEGRAM_BOT_TOKEN || "",
       apiBase: (env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").replace(/\/$/, ""),
       inboundWsUrl: env.PI_TELEGRAM_INBOUND_WS_URL || resolveInboundWsUrl(env),
-      inboundToken: env.PI_TELEGRAM_INBOUND_TOKEN || env.INBOUND_WEBHOOK_TOKEN || "",
+      inboundToken: env.PI_TELEGRAM_INBOUND_TOKEN || env[`${botPrefix}_INBOUND_TOKEN`] ||
+        (botNames.length <= 1 ? env.INBOUND_WEBHOOK_TOKEN : "") || "",
       tmuxSession: env.PI_TG_TMUX_SS || "",
-      botNames: configuredBotNames(env),
+      botNames,
     };
     return settings;
   };
@@ -214,9 +218,10 @@ export default function telegramMirror(pi) {
     description: "Start a fresh session",
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
+      // Only plain settings may be retained across Pi's session replacement.
+      const s = get(process.cwd());
       const res = await ctx.newSession();
       if (!res.cancelled) {
-        const s = get(process.cwd());
         if (s.to && s.token) {
           await mirror("✓ New session started.", s).catch(() => {});
         }
@@ -827,7 +832,7 @@ export default function telegramMirror(pi) {
     const s = get(ctx.cwd);
     const botError = botSelectionError(s);
     if (botError) return ctx.ui.notify(botError, "error");
-    if (!s.inboundToken) return ctx.ui.notify("Telegram inbound is disabled: set PI_TELEGRAM_INBOUND_TOKEN or INBOUND_WEBHOOK_TOKEN", "warning");
+    if (!s.inboundToken) return ctx.ui.notify(`Telegram inbound is disabled: set TELEGRAM_BOT_${s.bot.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_INBOUND_TOKEN or PI_TELEGRAM_INBOUND_TOKEN${s.botNames.length <= 1 ? " or INBOUND_WEBHOOK_TOKEN" : ""}`, "warning");
     if (!s.bot) return ctx.ui.notify("Telegram inbound requires PI_TELEGRAM_BOT to be set (which bot this session serves)", "error");
 
     // Close any previous inbound client before starting a new one.
@@ -855,7 +860,6 @@ export default function telegramMirror(pi) {
     currentMenuItems = [];
     inboundClient?.close();
     inboundClient = undefined;
-    server = undefined;
   });
 
   pi.on("agent_start", (_event, ctx) => {

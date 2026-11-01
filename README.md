@@ -125,6 +125,15 @@ own `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN` in `.env`.
 
 The extension connects to the gateway WebSocket (`ws://<TELEGRAM_HOST>:<TELEGRAM_PORT>/inbound`) and registers as its bot; the gateway pushes Telegram updates over that connection. It mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension registers as that bot, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process. See `Docs/Inbound-Routing-Redesign-Plan.md` for the full reverse-register design (方案 C).
 
+The extension reads the selected bot's `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN`
+from `.env`. `PI_TELEGRAM_INBOUND_TOKEN` can explicitly override it for a
+session. The shared `INBOUND_WEBHOOK_TOKEN` is supported only with a single
+configured bot. After changing extension code, restart Pi if `/reload` retains
+the old version of an `.mjs` extension.
+
+Telegram `/new` (alias `/clear`) starts a fresh conversation in the current Pi
+process. Its Telegram connection registers again for the new conversation.
+
 ## Health and security
 
 `GET /health` is unauthenticated and reports Bot API status and counters. Keep the service bound to loopback behind an HTTPS reverse proxy, use strong independent tokens, and keep `.env` out of version control. Telegram webhooks require a publicly reachable HTTPS URL (or Telegram's supported local-mode setup).

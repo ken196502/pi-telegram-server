@@ -239,6 +239,10 @@ export function connectInboundClient({ url, bot, token, onMessage, onOpen, onClo
     }
 
     ws.onopen = () => {
+      if (stopped) {
+        try { ws.close(); } catch {}
+        return;
+      }
       reconnectDelay = 1000;
       startPing();
       // Send register frame immediately.
@@ -246,6 +250,7 @@ export function connectInboundClient({ url, bot, token, onMessage, onOpen, onClo
     };
 
     ws.onmessage = (event) => {
+      if (stopped) return;
       let payload;
       try {
         const data = typeof event.data === "string" ? event.data : event.data.toString();
@@ -276,6 +281,7 @@ export function connectInboundClient({ url, bot, token, onMessage, onOpen, onClo
 
     ws.onclose = (event) => {
       stopPing();
+      if (stopped) return;
       if (registrationConfirmed) {
         registrationConfirmed = false;
         onClose?.(`connection closed (code ${event?.code})`);
@@ -284,6 +290,7 @@ export function connectInboundClient({ url, bot, token, onMessage, onOpen, onClo
     };
 
     ws.onerror = (err) => {
+      if (stopped) return;
       log("warn", "inbound ws socket error", { error: err?.message || String(err) });
       // onclose will fire and schedule reconnect.
     };
@@ -302,6 +309,7 @@ export function connectInboundClient({ url, bot, token, onMessage, onOpen, onClo
 
   function close() {
     stopped = true;
+    registrationConfirmed = false;
     stopPing();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (ws) {
