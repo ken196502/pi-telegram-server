@@ -98,17 +98,26 @@ export function createInboundHub({ resolveBotToken, log = () => {} }) {
     const name = String(botName || "").trim().toLowerCase();
     const set = connections.get(name);
     if (!set || set.size === 0) return false;
-    let delivered = 0;
+
+    // A single bot maps to a single active session in Pi. If multiple connections exist
+    // (e.g. from session replacements or reconnect timing), deliver only to the most
+    // recently registered open connection to avoid executing slash commands or prompts twice.
+    const openSockets = [];
     for (const ws of set) {
-      if (ws.readyState !== ws.OPEN) continue;
-      try {
-        ws.send(JSON.stringify(payload));
-        delivered += 1;
-      } catch (err) {
-        log("warn", "inbound ws send failed", { bot: name, error: err.message });
+      if (ws.readyState === ws.OPEN) {
+        openSockets.push(ws);
       }
     }
-    return delivered > 0;
+    if (openSockets.length === 0) return false;
+
+    const targetWs = openSockets[openSockets.length - 1];
+    try {
+      targetWs.send(JSON.stringify(payload));
+      return true;
+    } catch (err) {
+      log("warn", "inbound ws send failed", { bot: name, error: err.message });
+      return false;
+    }
   }
 
   function registeredBots() {

@@ -128,6 +128,11 @@ async function sendStopTyping(settings) {
   await post(settings.url, { to: settings.to, action: "stop_typing", ...(settings.bot ? { bot: settings.bot } : {}) }, settings.token).catch(() => {});
 }
 
+// Track the active inbound client at module level per bot so that if Pi reloads
+// the extension or replaces sessions (e.g. via /clear or /new), any previous
+// WebSocket client instance is properly closed instead of leaking a duplicate connection.
+const activeInboundClients = new Map();
+
 export default function telegramMirror(pi) {
   let settings;
   let inboundClient;
@@ -836,6 +841,12 @@ export default function telegramMirror(pi) {
     if (!s.bot) return ctx.ui.notify("Telegram inbound requires PI_TELEGRAM_BOT to be set (which bot this session serves)", "error");
 
     // Close any previous inbound client before starting a new one.
+    const botKey = s.bot.toLowerCase();
+    const existing = activeInboundClients.get(botKey);
+    if (existing) {
+      try { existing.close(); } catch {}
+      activeInboundClients.delete(botKey);
+    }
     if (inboundClient) {
       try { inboundClient.close(); } catch {}
       inboundClient = undefined;
@@ -852,12 +863,18 @@ export default function telegramMirror(pi) {
       onClose: (reason) => ctx.ui.notify(`Telegram inbound disconnected: ${reason}`, "warning"),
       log: (level, message, fields) => console.error(`[inbound-ws ${level}] ${message}`, fields ? JSON.stringify(fields) : ""),
     });
+    activeInboundClients.set(botKey, inboundClient);
   });
 
   pi.on("session_shutdown", () => {
     agentRunning = false;
     stopTyping();
     currentMenuItems = [];
+    const s = get(process.cwd());
+    const botKey = s?.bot?.toLowerCase();
+    if (botKey && activeInboundClients.get(botKey) === inboundClient) {
+      activeInboundClients.delete(botKey);
+    }
     inboundClient?.close();
     inboundClient = undefined;
   });
