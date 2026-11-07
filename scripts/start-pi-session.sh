@@ -31,6 +31,33 @@ inbound_token="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN=//p" "$env_f
   exit 1
 }
 
+for command in tmux pi; do
+  command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 1; }
+done
+
+# Direct invocations should run Pi in the requested named tmux session. The
+# multi-session launcher already creates that session and calls us inside it.
+current_tmux_session=""
+if [[ -n "${TMUX:-}" ]]; then
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    current_tmux_session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true)"
+  else
+    current_tmux_session="$(tmux display-message -p '#{session_name}' 2>/dev/null || true)"
+  fi
+fi
+if [[ "$current_tmux_session" != "$tmux_session" ]]; then
+  if tmux has-session -t "=$tmux_session" 2>/dev/null; then
+    echo "tmux session '$tmux_session' already exists; inspect it with: tmux attach -t '$tmux_session'" >&2
+    exit 1
+  fi
+
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  printf -v launch_command '%q ' env "PATH=$PATH" bash "$script_path" "$bot" "$tmux_session" "$@"
+  tmux new-session -d -s "$tmux_session" -c "$PWD" "exec bash -c $(printf '%q' "$launch_command")"
+  echo "Started Pi launcher in tmux session '$tmux_session'. Attach with: tmux attach -t '$tmux_session'" >&2
+  exit 0
+fi
+
 echo "starting Pi for bot '$bot' (WS reverse-register → gateway, tmux session '$tmux_session')" >&2
 
 export PI_TELEGRAM_BOT="$bot"
