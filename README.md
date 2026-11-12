@@ -1,144 +1,279 @@
-# Telegram Service
+# Pi Super-Agent
 
-A small Telegram Bot API gateway for Pi. It is webhook-only: the process never polls `getUpdates`. Telegram delivers updates to the configured webhook path, while an authenticated local webhook sends text and files through `sendMessage`/`sendDocument`.
+A Super-Agent built on [Pi](https://pi.dev), tmux and a Telegram bot.
 
-## One-command setup (Linux)
+Pi is the superior agent. It receives tasks over Telegram, dispatches coding
+CLIs into named tmux sessions, inspects the tmux state on a cron reminder,
+updates a daily task document, and reports back. **Pi does not write code
+itself** — coding work is planned and executed by the CLI it dispatches.
 
-On a fresh Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE or Alpine machine:
+The example configuration uses [Codex](https://github.com/openai/codex) for
+both stages. Any coding CLI can be substituted; see
+[Coding CLIs](#coding-clis).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ken196502/pi-telegram-server/main/LinuxAgentSetup.sh | bash
+## Architecture
+
+```
+Telegram user ──► Telegram Bot API ──► gateway (tmux: pi-telegram-gateway)
+                                          │  WebSocket /inbound
+                                          ▼
+                                 Pi TUI (tmux: pi) + extensions/telegram-mirror.mjs
+                                 system prompt: ~/.pi/agent/APPEND_SYSTEM.md
+                                          │ dispatches, never codes itself
+                                          ▼
+                      coding CLI in named tmux sessions (default: codex exec)
+cron ──► scripts/tmux-inspect.sh ──► gateway webhook ──► Pi: "inspect all tmux sessions"
+                                          └► Pi updates <workspace>/Docs/YYYYMMDD-daily-tasks.md
 ```
 
-`LinuxAgentSetup.sh` detects the distribution and package manager, installs git, Node.js >= 22.19, tmux and Pi, writes `~/.pi/agent/AGENTS.md`, clones this repository to `~/Pi/pi-telegram-server`, runs `npm install` and creates `.env` from `.env.example`. It is idempotent, keeps an existing `AGENTS.md` (unless `--force-agents` is given), and uses `sudo` only for system packages.
+The setup uses one bot named `main`, one gateway and one Pi session. The
+gateway code still supports several bots; the setup scripts and this guide
+describe the single-bot layout.
 
-Pass options after `bash -s --`:
+- The **gateway** speaks to the Telegram Bot API (polling by default, webhooks
+  optional), forwards allowed updates to Pi over a WebSocket, and exposes an
+  authenticated local API for outbound messages.
+- **Pi** runs in the tmux session `pi` with `extensions/telegram-mirror.mjs`. It
+  receives Telegram messages, dispatches coding work, and mirrors its replies
+  back to Telegram.
+- The **coding CLI** runs in a separate named tmux session per task, with output
+  tee'd to `.tmp/<cli>-<task>-coding.log`. Pi never blocks on it.
+- **Inspection** is event-driven. A cron job injects a reminder through the
+  gateway; only then does Pi inspect every tmux session, repair what failed, and
+  update the daily task document.
+
+## Quick start
+
+Requirements: a Linux machine with a supported package manager (apt, dnf, yum,
+pacman, zypper or apk), `sudo` unless running as root, and a Telegram bot
+created with [@BotFather](https://t.me/BotFather).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ken196502/pi-telegram-server/main/LinuxAgentSetup.sh \
-  | bash -s -- --dir ~/code/pi-telegram-server --force-agents
+git clone https://github.com/ken196502/pi-telegram-server.git
+cd pi-telegram-server
+./setup.sh
 ```
+
+`setup.sh` asks first for:
+
+1. the **Telegram bot token** (input hidden, never echoed or logged), and
+2. your **Telegram user ID** (numeric; send `/start` to the bot and use the ID
+   reported by a bot such as `@userinfobot` if you do not know it).
+
+It then detects the distribution and installs only what is missing: tmux,
+Node.js >= 22.19, Pi, and the npm dependencies. It verifies the token with
+`getMe` **before** writing `.env`, writes `.env` with mode 600, installs
+`config/APPEND_SYSTEM.md` to `~/.pi/agent/APPEND_SYSTEM.md`, warns if `codex` is
+missing, and starts the gateway and Pi in tmux.
+
+Non-interactive:
+
+```bash
+PI_TG_BOT_TOKEN='123456:...' PI_TG_USER_ID='123456789' ./setup.sh
+```
+
+Missing credentials with no terminal is an error; there is no default token or
+user ID.
+
+### Options
 
 | Option | Meaning |
 | --- | --- |
-| `--dir <path>` | Clone/update the repo at `<path>` (default `~/Pi/pi-telegram-server`) |
-| `--skip-packages` | Do not install git/curl/tmux/Node.js |
-| `--skip-pi` | Do not install Pi |
-| `--update-pi` | Run `pi update` if Pi is already installed |
-| `--skip-repo` | Do not clone or update the repository |
-| `--skip-npm` | Do not run `npm install` |
-| `--force-agents` | Overwrite `~/.pi/agent/AGENTS.md` (a timestamped backup is kept) |
-| `--dry-run` | Print what would run, change nothing |
+| `--workspace <dir>` | Pi working directory (default `$HOME`) |
+| `--dry-run` | Print every action; write and start nothing |
+| `--force-env` | Replace an existing `.env` (timestamped backup first) |
+| `--force-prompt` | Replace a differing `~/.pi/agent/APPEND_SYSTEM.md` (backup first) |
+| `--with-cron` | Install the inspection cron entry |
+| `--cron-interval <n>` | Inspection interval in minutes (default 20) |
+| `--skip-packages` | Do not install tmux/Node.js/Pi/npm deps; fail if a command is missing |
 
-From a local checkout, run `./LinuxAgentSetup.sh` instead. After it finishes, edit `.env` with your BotFather token and secrets, then `npm start`.
+A conflicting `.env` or prompt file stops setup instead of merging silently.
 
-See [Docs/LinuxAgentSetup-Plan.md](Docs/LinuxAgentSetup-Plan.md) for the design notes.
+## Coding CLIs
 
-## Setup
-
-```bash
-npm install
-cp .env.example .env
-```
-
-Create a bot with BotFather and set `TELEGRAM_BOT_TOKEN` and a random `WEBHOOK_TOKEN`. To receive messages, expose the service over HTTPS and set `TELEGRAM_WEBHOOK_URL`; startup registers it with Telegram. If a reverse proxy terminates TLS, proxy that URL to the local `TELEGRAM_WEBHOOK_PATH` (default `/telegram/webhook`). `TELEGRAM_WEBHOOK_SECRET` enables Telegram's `X-Telegram-Bot-Api-Secret-Token` check.
+The default prompt in `config/APPEND_SYSTEM.md` dispatches coding work to
+`codex exec`, first for a plan and then for execution:
 
 ```bash
-npm start
+# plan
+codex exec --sandbox workspace-write -C <workdir> \
+  "<task> Write Docs/Plan-<Topic>.md. Do not implement it yet."
+
+# execute
+codex exec --sandbox workspace-write -C <workdir> \
+  "Implement Docs/Plan-<Topic>.md and verify it."
 ```
 
-## Multiple bots
+Each dispatch runs in a named tmux session such as
+`codex-refresh-auth-coding`, and output is tee'd to
+`.tmp/codex-refresh-auth-coding.log`.
 
-One gateway process can serve several bots. List them in `TELEGRAM_BOTS` as `name=token` pairs (or `name:token`), keeping `WEBHOOK_TOKEN` as the single local API token:
+To use other CLIs, edit `config/APPEND_SYSTEM.md` and reinstall it with
+`./setup.sh --force-prompt` (or copy it to `~/.pi/agent/APPEND_SYSTEM.md`
+yourself). A common split is Kiro with Opus for planning and CodeBuddy with
+DeepSeek for execution:
 
 ```bash
-TELEGRAM_BOTS=alpha=123456:token-a,beta=654321:token-b
-TELEGRAM_WEBHOOK_URL=https://bot.example.com/telegram/webhook
+# plan with Kiro (Opus)
+kiro-cli chat --model claude-opus-5.5 --no-interactive --trust-all-tools \
+  "<task> Write Docs/Plan-<Topic>.md. Do not implement it yet."
+
+# execute with CodeBuddy (DeepSeek)
+codebuddy --model deepseek-v4.1-flash --dangerously-skip-permissions -p \
+  "Implement Docs/Plan-<Topic>.md and verify it."
 ```
 
-Each bot gets its own webhook path (`/telegram/webhook/alpha`, `/telegram/webhook/beta`), inbound forwarding, allowed senders, parse mode, message limit and polling flag. Global `TELEGRAM_*` values are defaults; override any of them per bot with `TELEGRAM_BOT_<NAME>_<FIELD>` (for example `TELEGRAM_BOT_BETA_ALLOWED_SENDERS=222` or `TELEGRAM_BOT_BETA_WEBHOOK_SECRET=...`). With a single `TELEGRAM_BOT_TOKEN` and no `TELEGRAM_BOTS`, the bot is named `default` and keeps the original `/telegram/webhook` path.
+Keep the session prefix (`kiro-`, `codebuddy-`) and the same log convention so
+inspection can tell which CLI owns a session.
 
-Outbound requests choose a bot with the `bot` field, the `X-Telegram-Bot` header, `?bot=name`, or the `/webhook/<name>` path. A single configured bot is used by default. When several bots are configured there is no fallback: a request that does not name a bot is rejected with `400` and an error listing the configured bots.
+`setup.sh` does not install Codex. It checks for it and prints the install
+command when it is missing, because the default prompt depends on it.
 
-```json
-{"bot":"beta","to":"123456789","message":"hello from beta"}
+## Inspection
+
+`scripts/tmux-inspect.sh` appends a tmux snapshot to `.tmp/tmux-status.log`
+(kept to the last 2000 lines) and injects a reminder into Pi through the
+gateway webhook. The reminder asks Pi to inspect every tmux session, repair
+failures by dispatching the coding CLI (plan first, then execute), avoid
+re-running tasks blocked by external causes, and update the daily task document
+only when something changed.
+
+```bash
+scripts/tmux-inspect.sh --dry-run   # snapshot, busy decision, target, payload
+scripts/tmux-inspect.sh --force     # deliver even if Pi looks busy
+scripts/tmux-inspect.sh             # normal cron invocation
 ```
 
-Forwarded inbound updates include `"bot":"<name>"` so a Pi extension can filter on it. `GET /health` reports aggregate counters plus a `bots` object with per-bot status.
+A busy gate reads `GET /health` and skips the reminder while Pi is mid-turn, so
+queued reminders do not pile up. If `/health` is unavailable or malformed, the
+script logs the reason and delivers anyway — a redundant prompt is cheaper than
+a dead inspection loop, and the log makes the drift visible.
 
-## Outbound API
+A failed webhook POST is not hidden: the HTTP code and error are logged, the
+script prints them, and it exits non-zero. There is no `tmux send-keys`
+fallback.
 
-`POST /webhook` (also `/send`) requires `Authorization: Bearer <WEBHOOK_TOKEN>` or `X-Webhook-Token`.
+Install the cron entry (refuses to add a duplicate):
+
+```bash
+./setup.sh --with-cron --cron-interval 20
+```
+
+The entry runs every 20 minutes by default:
+
+```
+*/20 * * * * /path/to/pi-telegram-server/scripts/tmux-inspect.sh >/dev/null 2>&1
+```
+
+## Operating
+
+```bash
+tmux attach -t pi                    # Pi TUI
+tmux attach -t pi-telegram-gateway   # gateway console
+tmux ls                              # all sessions, including coding tasks
+curl -s http://127.0.0.1:3093/health # bot status, counters, inbound registration
+tail -f gateway.log                  # gateway log
+```
+
+Restart or start both services with:
+
+```bash
+scripts/start.sh --workspace "$HOME"
+```
+
+`scripts/start.sh` starts the gateway in `pi-telegram-gateway` and Pi in `pi`,
+waits up to 45 seconds for `/health` to report `main` connected, and exits
+non-zero with the reason on timeout. It leaves already-running sessions alone
+and says so. Only explicitly set proxy variables are passed to the gateway;
+nothing is auto-detected.
+
+Send an outbound message through the local API:
+
+```bash
+npm run send -- --to 123456789 --message 'hello'
+npm run send -- --to 123456789 --file /tmp/report.pdf --message 'report'
+```
+
+## Configuration reference
+
+`setup.sh` writes `.env` with mode 600:
+
+| Key | Meaning |
+| --- | --- |
+| `TELEGRAM_BOTS` | Bot list, `main=<token>` in the generated file |
+| `TELEGRAM_BOT_MAIN_INBOUND_TOKEN` | Shared secret for the Pi WebSocket registration |
+| `WEBHOOK_TOKEN` | Bearer token for the local outbound API |
+| `TELEGRAM_BOT_MAIN_ALLOWED_SENDERS` | Comma-separated Telegram user IDs allowed to reach Pi |
+| `TELEGRAM_TO` | Chat ID for outbound messages and the inspection reminder |
+| `TELEGRAM_POLLING` | `true` uses `getUpdates`; setup defaults to polling |
+| `TELEGRAM_HOST` / `TELEGRAM_PORT` | Local bind address (default `127.0.0.1:3093`) |
+
+Optional keys, documented in `.env.example`:
+
+| Key | Meaning |
+| --- | --- |
+| `TELEGRAM_WEBHOOK_URL` | Public HTTPS URL; when set, the gateway registers a webhook instead of polling |
+| `TELEGRAM_WEBHOOK_SECRET` | Telegram `X-Telegram-Bot-Api-Secret-Token` value |
+| `TELEGRAM_WEBHOOK_PATH` | Local webhook path (default `/telegram/webhook`) |
+| `TELEGRAM_API_BASE_URL` | Bot API base URL override (proxy or compatible gateway) |
+| `PI_TELEGRAM_BOT` | Bot the extension registers as; required when several bots are configured |
+| `PI_TG_TMUX_SS` | tmux session the extension sends TUI input to (defaults to `$TMUX`, then `pi`) |
+| `PI_TG_TYPING_IDLE_MS` | How long "typing…" lasts for a message that starts no agent run |
+| `TELEGRAM_DEBUG_TYPING` | `1` logs typing signals and keepalives |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` | Explicit proxy for the gateway |
+
+## Gateway details
+
+The gateway supports both update delivery modes:
+
+- **Polling** (`TELEGRAM_POLLING=true`) is the setup default and needs no public
+  URL.
+- **Webhooks** use `TELEGRAM_WEBHOOK_URL`; Telegram delivers updates to
+  `TELEGRAM_WEBHOOK_PATH`, and `TELEGRAM_WEBHOOK_SECRET` enables the secret
+  header check.
+
+Inbound flow: the gateway forwards allowed text and caption updates over a
+WebSocket at `ws://<TELEGRAM_HOST>:<TELEGRAM_PORT>/inbound`. The Pi extension
+connects and registers as its bot with `TELEGRAM_BOT_MAIN_INBOUND_TOKEN`; the
+gateway pushes updates over that connection. This reverse registration is why
+no inbound HTTP port is needed per Pi session.
+
+Outbound flow: `POST /webhook` (also `/send`) requires
+`Authorization: Bearer <WEBHOOK_TOKEN>` or `X-Webhook-Token`:
 
 ```json
 {"to":"123456789","message":"hello"}
 ```
 
-`to` is a numeric chat ID (including negative group IDs) or an `@username`. Long text is split automatically. Send a local file as a Telegram document:
+`to` is a numeric chat ID (including negative group IDs) or an `@username`.
+Long text is split automatically. Send a local file as a Telegram document:
 
 ```json
 {"to":"-1001234567890","filePath":"/tmp/report.pdf","message":"weekly report","fileName":"report.pdf","mimetype":"application/pdf"}
 ```
 
-The CLI uses the same endpoint:
+`npm run send` uses the same endpoint. The extension mirrors complete
+assistant text to `TELEGRAM_TO`, keeps the "typing…" indicator alive through
+long tool calls, and routes TUI commands and menu keys to the tmux session Pi
+runs in. Telegram `/new` (alias `/clear`) starts a fresh conversation in the
+same Pi process.
 
-```bash
-npm run send -- --to 123456789 --message 'hello'
-npm run send -- --to 123456789 --file /tmp/report.pdf --message 'report'
-npm run send -- --bot beta --to 123456789 --message 'hello from beta'
-```
+Several bots are still supported by `src/lib.mjs`: list them in
+`TELEGRAM_BOTS` as `name=token` pairs, and each bot gets its own webhook path,
+inbound token and allowed senders. With several bots configured, a request that
+does not name a bot is rejected instead of falling back to the first one. The
+setup scripts configure only `main`.
 
-## Pi extension and inbound bridge
+## Security notes
 
-Set `TELEGRAM_INBOUND_ALLOWED_SENDERS` (comma-separated Telegram user IDs) in the service. The gateway forwards allowed text/caption updates to Pi. Start Pi with:
-
-```bash
-pi --extension ./extensions/telegram-mirror.mjs
-```
-
-With several bots configured every Pi session must be bound to exactly one of them. `scripts/start-pi-session.sh` verifies that `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN` is set in `.env` and exports `PI_TELEGRAM_BOT` and `PI_TG_TMUX_SS` before starting Pi, so the required variables cannot be forgotten:
-
-```bash
-scripts/start-pi-session.sh main pi        # bot "main",    tmux session "pi"
-scripts/start-pi-session.sh inspilot pi2   # only if "inspilot" is listed in TELEGRAM_BOTS
-```
-
-Launch the gateway and one Pi session per bot configured in `TELEGRAM_BOTS` with:
-
-```bash
-./scripts/start-two-pi-sessions.sh --dry-run   # print the resolved bot -> session mapping
-./scripts/start-two-pi-sessions.sh
-tmux attach -t pi     # 1st bot in TELEGRAM_BOTS (normally main)
-tmux attach -t pi2    # 2nd bot, if one is configured
-```
-
-The session list is derived from `.env`: the first entry maps to `pi`, the
-second to `pi2`, the third to `pi3`, and so on, so the order of
-`TELEGRAM_BOTS` is part of the contract. No bot name is hardcoded — a bot that
-is removed from `TELEGRAM_BOTS` gets no session. A missing `.env`, an empty
-`TELEGRAM_BOTS`, a malformed entry or a bot without a session mapping stops the
-launcher with a specific error instead of starting the wrong session.
-
-Every session starts with `/mnt/share/VM` as its workspace. If `/mnt/share`
-is not mounted (for example, after reboot), the launcher runs
-`sudo mount -t virtiofs share /mnt/share` first; enter your sudo password when
-prompted. The shared `VM` directory must already exist and be writable.
-
-The launcher checks that every started Pi session has registered its WebSocket connection, starts the gateway in `pi-telegram-gateway` if needed, and waits for those bots to connect. Gateway output goes to `gateway.log`. It respects configured proxy variables and uses the local Mihomo HTTP proxy at `127.0.0.1:7890` when available if no proxy is configured. A failed readiness check exits with an error instead of reporting success.
-
-The launcher leaves existing sessions running, including their current workspace. To start only some of the configured bots or pass Pi arguments, run `./scripts/start-two-pi-sessions.sh [<bot> ...] [-- <pi args...>]`; every named bot must appear in `TELEGRAM_BOTS`. Each bot needs its own `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN` in `.env`.
-
-The extension connects to the gateway WebSocket (`ws://<TELEGRAM_HOST>:<TELEGRAM_PORT>/inbound`) and registers as its bot; the gateway pushes Telegram updates over that connection. It mirrors complete assistant text to `PI_TELEGRAM_TO` through the outbound webhook. TUI commands and menu keys go to the tmux session Pi runs in, which is detected from `$TMUX`; set `PI_TG_TMUX_SS` to target a different session, otherwise it falls back to `pi`. When several bots are configured, `PI_TELEGRAM_BOT` is required: the extension registers as that bot, and refuses to start if the value is missing or unknown instead of picking a default. It never starts a second Pi process. See `Docs/Inbound-Routing-Redesign-Plan.md` for the full reverse-register design (方案 C).
-
-The extension reads the selected bot's `TELEGRAM_BOT_<NAME>_INBOUND_TOKEN`
-from `.env`. `PI_TELEGRAM_INBOUND_TOKEN` can explicitly override it for a
-session. The shared `INBOUND_WEBHOOK_TOKEN` is supported only with a single
-configured bot. After changing extension code, restart Pi if `/reload` retains
-the old version of an `.mjs` extension.
-
-Telegram `/new` (alias `/clear`) starts a fresh conversation in the current Pi
-process. Its Telegram connection registers again for the new conversation.
-
-## Health and security
-
-`GET /health` is unauthenticated and reports Bot API status and counters. Keep the service bound to loopback behind an HTTPS reverse proxy, use strong independent tokens, and keep `.env` out of version control. Telegram webhooks require a publicly reachable HTTPS URL (or Telegram's supported local-mode setup).
+- `.env` contains the bot token and local API token. Keep it mode 600 and never
+  commit it; `.gitignore` already excludes `.env`, `.env.bak*` and `*.bak`.
+- `TELEGRAM_BOT_MAIN_ALLOWED_SENDERS` is the only gate for who can send tasks
+  to Pi. Use numeric user IDs, not usernames.
+- The local API and `/health` bind to `127.0.0.1` by default. Do not expose the
+  gateway directly to the internet; put an HTTPS reverse proxy in front of the
+  webhook path if you use webhooks.
+- If a token is ever committed, deleting the file in a new commit does not
+  remove it from git history. Revoke and regenerate the token in @BotFather,
+  update `.env`, and treat the old token as leaked. Rewriting history is a
+  separate, destructive decision.

@@ -2,23 +2,24 @@
   "name": "pi-telegram-service",
   "version": "0.1.0",
   "private": false,
-  "description": "A pure-webhook Telegram Bot API service with authenticated outbound text and file sending.",
+  "description": "A Pi Super-Agent: a Telegram gateway that dispatches coding CLIs in tmux, inspects them on a schedule, and reports back.",
   "type": "module",
   "keywords": [
     "pi-coding-agent",
     "telegram",
     "telegram-bot",
-    "webhook",
+    "tmux",
+    "super-agent",
     "ai-agent"
   ],
   "license": "MIT",
   "files": [
     ".env.example",
+    "config/",
     "extensions/",
     "scripts/",
     "src/",
-    "systemd/",
-    "launchd/",
+    "setup.sh",
     "LICENSE",
     "README.md"
   ],
@@ -29,7 +30,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19"
   },
   "dependencies": {
     "undici": "^8.10.1",
