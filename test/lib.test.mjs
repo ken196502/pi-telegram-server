@@ -480,7 +480,7 @@ describe("resolveInboundWsUrl", () => {
 describe("matchSensitiveFile", () => {
   it("blocks exported session cookies and other credential files", () => {
     const blocked = [
-      "/mnt/share/VM/cookies.txt",
+      "/srv/work/cookies.txt",
       "/tmp/cookie.txt",
       "cookies.json",
       "/home/u/x_cookies.json",
@@ -503,9 +503,9 @@ describe("matchSensitiveFile", () => {
 
   it("allows ordinary documents", () => {
     const allowed = [
-      "/mnt/share/VM/AIGC-pipeline/artifacts/run/FINAL_REPORT.md",
+      "/srv/work/pipeline/artifacts/run/FINAL_REPORT.md",
       "/tmp/gateway-guard-ok.txt",
-      "/mnt/share/VM/AIGC-pipeline/artifacts/run/explainer/explainer-video.mp4",
+      "/srv/work/pipeline/artifacts/run/explainer/explainer-video.mp4",
       "/tmp/table-123.html",
       "/srv/app/logs/pipeline.log",
       "/srv/app/data/recipe-notes.md",

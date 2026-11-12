@@ -5,10 +5,10 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createInboundHub, connectInboundClient, resolveInboundWsUrl } from "../src/inbound-ws.mjs";
 
 const TOKEN_MAIN = "main-secret";
-const TOKEN_PILOT = "pilot-secret";
+const TOKEN_BETA = "beta-secret";
 
 function makeHub() {
-  const tokens = { main: TOKEN_MAIN, inspilot: TOKEN_PILOT };
+  const tokens = { main: TOKEN_MAIN, beta: TOKEN_BETA };
   const logs = [];
   const log = (level, message, fields = {}) => logs.push({ level, message, fields });
   const hub = createInboundHub({
@@ -114,9 +114,9 @@ describe("InboundHub send", () => {
     const messages = [];
     ws.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
     await new Promise((r) => ws.on("open", r));
-    ws.send(JSON.stringify({ type: "register", bot: "inspilot", token: TOKEN_PILOT }));
+    ws.send(JSON.stringify({ type: "register", bot: "beta", token: TOKEN_BETA }));
     await new Promise((r) => setTimeout(r, 50));
-    const ok = hub.send("inspilot", { type: "telegram_message", body: "hi" });
+    const ok = hub.send("beta", { type: "telegram_message", body: "hi" });
     assert.equal(ok, true);
     await new Promise((r) => setTimeout(r, 50));
     const push = messages.find((m) => m.type === "telegram_message");

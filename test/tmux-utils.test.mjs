@@ -97,7 +97,7 @@ $ git status
 → ✓ mimo-v2.5-pro [commandcode]
   ✓ gpt-4o [openai]
 ── ⠴ Working ─────────────────────────
-/mnt/share/VM`;
+/srv/work`;
       const items = parseMenuItems(content);
       assert.equal(items.length, 0);
     });

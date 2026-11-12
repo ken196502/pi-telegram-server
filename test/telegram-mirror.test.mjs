@@ -5,7 +5,7 @@ import telegramMirror from "../extensions/telegram-mirror.mjs";
 import { createInboundHub } from "../src/inbound-ws.mjs";
 
 test("session_start authenticates each selected bot and shuts down cleanly", async (t) => {
-  const tokens = { main: "main-inbound-test", inspilot: "inspilot-inbound-test", default: "single-inbound-test" };
+  const tokens = { main: "main-inbound-test", beta: "beta-inbound-test", default: "single-inbound-test" };
   const hub = createInboundHub({ resolveBotToken: (bot) => tokens[bot] });
   const server = http.createServer();
   const wss = hub.attachToServer(server);
@@ -16,14 +16,14 @@ test("session_start authenticates each selected bot and shuts down cleanly", asy
     await new Promise((resolve) => server.close(resolve));
   });
 
-  for (const scenario of ["main", "inspilot", "default", "explicit-token", "missing-token"]) {
+  for (const scenario of ["main", "beta", "default", "explicit-token", "missing-token"]) {
     await t.test(scenario, async (t) => {
       const bot = scenario.endsWith("-token") ? "main" : scenario;
       const env = {
-        TELEGRAM_BOTS: bot === "default" ? "" : "main=test-main,inspilot=test-inspilot",
+        TELEGRAM_BOTS: bot === "default" ? "" : "main=test-main,beta=test-beta",
         TELEGRAM_BOT_TOKEN: "test-single",
         TELEGRAM_BOT_MAIN_INBOUND_TOKEN: scenario === "missing-token" ? "" : scenario === "explicit-token" ? "wrong-bot-token" : tokens.main,
-        TELEGRAM_BOT_INSPILOT_INBOUND_TOKEN: tokens.inspilot,
+        TELEGRAM_BOT_BETA_INBOUND_TOKEN: tokens.beta,
         TELEGRAM_BOT_DEFAULT_INBOUND_TOKEN: "",
         PI_TELEGRAM_BOT: bot.toUpperCase(),
         PI_TELEGRAM_INBOUND_WS_URL: `ws://127.0.0.1:${server.address().port}/inbound`,

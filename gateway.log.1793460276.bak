@@ -1,6 +1,0 @@
-2026-10-31T15:24:20.093Z warn multiple bots configured; outbound requests must name a bot and each Pi session must set PI_TELEGRAM_BOT {"bots":["main","inspilot"]}
-2026-10-31T15:24:20.108Z info Telegram HTTP service listening {"host":"127.0.0.1","port":3093,"bots":["main","inspilot"],"inboundWsPath":"/inbound"}
-2026-10-31T15:24:22.016Z info Starting long-polling mode {"bot":"main"}
-2026-10-31T15:24:22.017Z info Telegram Bot API connected {"bot":"main","mode":"polling"}
-2026-10-31T15:24:22.345Z info Starting long-polling mode {"bot":"inspilot"}
-2026-10-31T15:24:22.347Z info Telegram Bot API connected {"bot":"inspilot","mode":"polling"}
