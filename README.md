@@ -7,9 +7,8 @@ CLIs into named tmux sessions, inspects the tmux state on a cron reminder,
 updates a daily task document, and reports back. **Pi does not write code
 itself** — coding work is planned and executed by the CLI it dispatches.
 
-The example configuration uses [Codex](https://github.com/openai/codex) for
-both stages. Any coding CLI can be substituted; see
-[Coding CLIs](#coding-clis).
+The example configuration uses [OpenCode](https://opencode.ai) for both stages.
+Any coding CLI can be substituted; see [Coding CLIs](#coding-clis).
 
 ## Architecture
 
@@ -21,7 +20,7 @@ Telegram user ──► Telegram Bot API ──► gateway (tmux: pi-telegram-ga
                                  system prompt: ~/.pi/agent/APPEND_SYSTEM.md
                                           │ dispatches, never codes itself
                                           ▼
-                      coding CLI in named tmux sessions (default: codex exec)
+                      coding CLI in named tmux sessions (default: opencode run)
 cron ──► scripts/tmux-inspect.sh ──► gateway webhook ──► Pi: "inspect all tmux sessions"
                                           └► Pi updates <workspace>/Docs/YYYYMMDD-daily-tasks.md
 ```
@@ -63,8 +62,8 @@ cd pi-telegram-server
 It then detects the distribution and installs only what is missing: tmux,
 Node.js >= 22.19, Pi, and the npm dependencies. It verifies the token with
 `getMe` **before** writing `.env`, writes `.env` with mode 600, installs
-`config/APPEND_SYSTEM.md` to `~/.pi/agent/APPEND_SYSTEM.md`, warns if `codex` is
-missing, and starts the gateway and Pi in tmux.
+`config/APPEND_SYSTEM.md` to `~/.pi/agent/APPEND_SYSTEM.md`, warns if OpenCode
+is missing, and starts the gateway and Pi in tmux.
 
 Non-interactive:
 
@@ -92,26 +91,27 @@ A conflicting `.env` or prompt file stops setup instead of merging silently.
 ## Coding CLIs
 
 The default prompt in `config/APPEND_SYSTEM.md` dispatches coding work to
-`codex exec`, first for a plan and then for execution:
+`opencode run`, first for a plan and then for execution:
 
 ```bash
 # plan
-codex exec --sandbox workspace-write -C <workdir> \
+cd <workdir> && opencode run \
   "<task> Write Docs/Plan-<Topic>.md. Do not implement it yet."
 
 # execute
-codex exec --sandbox workspace-write -C <workdir> \
+cd <workdir> && opencode run \
   "Implement Docs/Plan-<Topic>.md and verify it."
 ```
 
 Each dispatch runs in a named tmux session such as
-`codex-refresh-auth-coding`, and output is tee'd to
-`.tmp/codex-refresh-auth-coding.log`.
+`opencode-refresh-auth-coding`, and output is tee'd to
+`.tmp/opencode-refresh-auth-coding.log`.
 
-To use other CLIs, edit `config/APPEND_SYSTEM.md` and reinstall it with
-`./setup.sh --force-prompt` (or copy it to `~/.pi/agent/APPEND_SYSTEM.md`
-yourself). A common split is Kiro with Opus for planning and CodeBuddy with
-DeepSeek for execution:
+The example above uses OpenCode for both stages. To use other CLIs, replace the
+commands in `config/APPEND_SYSTEM.md`; the tmux and logging rules stay the same.
+Reinstall the prompt with `./setup.sh --force-prompt` (or copy it to
+`~/.pi/agent/APPEND_SYSTEM.md` yourself). A common split is Kiro with Opus for
+planning and CodeBuddy with DeepSeek for execution:
 
 ```bash
 # plan with Kiro (Opus)
@@ -123,11 +123,11 @@ codebuddy --model deepseek-v4.1-flash --dangerously-skip-permissions -p \
   "Implement Docs/Plan-<Topic>.md and verify it."
 ```
 
-Keep the session prefix (`kiro-`, `codebuddy-`) and the same log convention so
-inspection can tell which CLI owns a session.
+Use the matching session prefixes (`kiro-`, `codebuddy-`) and the same log
+convention so inspection can tell which CLI owns a session.
 
-`setup.sh` does not install Codex. It checks for it and prints the install
-command when it is missing, because the default prompt depends on it.
+`setup.sh` does not install OpenCode. It checks for it and prints the install
+command when it is missing.
 
 ## Inspection
 

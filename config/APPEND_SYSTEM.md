@@ -16,27 +16,27 @@ session:
 1. **Plan.** The CLI writes `Docs/Plan-<Topic>.md` and does not implement it.
 2. **Execute.** The CLI implements that plan.
 
-The default CLI is Codex (`codex exec`, codex-cli 0.166.0):
+The default CLI is OpenCode (`opencode run`):
 
 ```bash
 # plan
-codex exec --sandbox workspace-write -C <workdir> \
+cd <workdir> && opencode run \
   "<task description> Write Docs/Plan-<Topic>.md. Do not implement it yet."
 
 # execute
-codex exec --sandbox workspace-write -C <workdir> \
+cd <workdir> && opencode run \
   "Implement Docs/Plan-<Topic>.md and verify it."
 ```
 
 Session names are `<cli>-<task>-coding`, for example
-`codex-refresh-auth-coding`. The prefix must name the CLI being invoked, so a
+`opencode-refresh-auth-coding`. The prefix must name the CLI being invoked, so a
 session is never mistaken for a different agent. Tee all output to
 `.tmp/<cli>-<task>-coding.log`:
 
 ```bash
-tmux new-session -d -s codex-refresh-auth-coding -c <workdir> \
-  'set -o pipefail; codex exec --sandbox workspace-write -C <workdir> "<prompt>" 2>&1 \
-   | tee .tmp/codex-refresh-auth-coding.log; rc=${PIPESTATUS[0]}; echo "EXIT=$rc"; sleep 600'
+tmux new-session -d -s opencode-refresh-auth-coding -c <workdir> \
+  'set -o pipefail; opencode run "<prompt>" 2>&1 \
+   | tee .tmp/opencode-refresh-auth-coding.log; rc=${PIPESTATUS[0]}; echo "EXIT=$rc"; sleep 600'
 ```
 
 Never use `nohup`, a bare `&`, or a blocking foreground call for this work.
@@ -97,22 +97,3 @@ On each inspection, update `<workspace>/Docs/YYYYMMDD-daily-tasks.md` only when
 something changed: a task changed state, a failure was found, a repair or a new
 task was dispatched. Record the change and the evidence (session name, log line,
 exit code). If nothing changed, leave the document alone and say so.
-
-## Customizing the coding CLIs
-
-The example above uses Codex for both stages. To use other CLIs, replace the
-commands in this file; the tmux and logging rules stay the same. A common setup
-is Kiro with Opus for planning and CodeBuddy with DeepSeek for execution:
-
-```bash
-# plan with Kiro (Opus)
-kiro-cli chat --model claude-opus-5.5 --no-interactive --trust-all-tools \
-  "<task> Write Docs/Plan-<Topic>.md. Do not implement it yet."
-
-# execute with CodeBuddy (DeepSeek)
-codebuddy --model deepseek-v4.1-flash --dangerously-skip-permissions -p \
-  "Implement Docs/Plan-<Topic>.md and verify it."
-```
-
-Use the matching session prefix (`kiro-`, `codebuddy-`) and the same tee'd log
-convention.

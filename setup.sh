@@ -415,14 +415,14 @@ install_prompt() {
 }
 
 # ── 7. coding CLI check ──────────────────────────────────────────────────────
-check_codex() {
-  if command -v codex >/dev/null 2>&1; then
-    ok "codex found: $(codex --version 2>/dev/null || echo unknown)"
+check_opencode() {
+  if command -v opencode >/dev/null 2>&1; then
+    ok "OpenCode found: $(opencode --version 2>/dev/null || echo unknown)"
     return
   fi
-  warn "codex is not installed. The default prompt in config/APPEND_SYSTEM.md"
-  warn "dispatches coding work to 'codex exec'. Install it with:"
-  warn "  npm install -g @openai/codex"
+  warn "OpenCode is not installed. The default prompt in config/APPEND_SYSTEM.md"
+  warn "dispatches coding work to 'opencode run'. Install it with:"
+  warn "  curl -fsSL https://opencode.ai/install | bash"
   warn "or customize config/APPEND_SYSTEM.md to use another coding CLI."
 }
 
@@ -479,7 +479,7 @@ main() {
   verify_token
   write_env
   install_prompt
-  check_codex
+  check_opencode
   install_cron
   start_services
 
