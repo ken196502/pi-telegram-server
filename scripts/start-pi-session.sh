@@ -31,7 +31,7 @@ inbound_token="$(sed -n "s/^TELEGRAM_BOT_${bot_upper}_INBOUND_TOKEN=//p" "$env_f
   exit 1
 }
 
-for command in tmux pi; do
+for command in tmux node pi; do
   command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 1; }
 done
 
@@ -58,9 +58,49 @@ if [[ "$current_tmux_session" != "$tmux_session" ]]; then
   exit 0
 fi
 
+# A standalone Pi launch must bring up the shared gateway before the extension
+# attempts its WebSocket registration.
+if ! node "$repo_dir/scripts/check-telegram-ready.mjs" listening "$bot"; then
+  if tmux has-session -t '=pi-telegram-gateway' 2>/dev/null; then
+    echo "Gateway tmux session exists but its HTTP service is unavailable; inspect it with: tmux attach -t pi-telegram-gateway" >&2
+    exit 1
+  fi
+
+  gateway_env=()
+  for proxy_key in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do
+    if [[ -n "${!proxy_key:-}" ]]; then
+      gateway_env+=("$proxy_key=${!proxy_key}")
+    fi
+  done
+  if ! node "$repo_dir/scripts/check-telegram-ready.mjs" proxy &&
+     (exec 3<>/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
+    gateway_env+=(HTTPS_PROXY=http://127.0.0.1:7890)
+    echo "Using local Telegram proxy at 127.0.0.1:7890" >&2
+  fi
+
+  printf -v gateway_command '%q ' env "${gateway_env[@]}" node "$repo_dir/src/gateway.mjs"
+  printf -v gateway_log '%q' "$repo_dir/gateway.log"
+  tmux new-session -d -s pi-telegram-gateway -c "$repo_dir" "exec $gateway_command >>$gateway_log 2>&1"
+  echo "Started Telegram gateway in tmux session 'pi-telegram-gateway' (log: $repo_dir/gateway.log)" >&2
+fi
+
+gateway_ready=0
+for ((attempt=0; attempt<45; attempt++)); do
+  if node "$repo_dir/scripts/check-telegram-ready.mjs" listening "$bot"; then
+    gateway_ready=1
+    break
+  fi
+  sleep 1
+done
+if (( ! gateway_ready )); then
+  echo "Gateway did not become ready. Inspect with: tmux attach -t pi-telegram-gateway (log: $repo_dir/gateway.log)" >&2
+  exit 1
+fi
+
 echo "starting Pi for bot '$bot' (WS reverse-register → gateway, tmux session '$tmux_session')" >&2
 
 export PI_TELEGRAM_BOT="$bot"
+export PI_TELEGRAM_INBOUND_TOKEN="$inbound_token"
 export PI_TG_TMUX_SS="$tmux_session"
 
 exec pi --extension "$repo_dir/extensions/telegram-mirror.mjs" "$@"
