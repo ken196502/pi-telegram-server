@@ -72,11 +72,6 @@ if ! node "$repo_dir/scripts/check-telegram-ready.mjs" listening "$bot"; then
       gateway_env+=("$proxy_key=${!proxy_key}")
     fi
   done
-  if ! node "$repo_dir/scripts/check-telegram-ready.mjs" proxy &&
-     (exec 3<>/dev/tcp/127.0.0.1/7890) 2>/dev/null; then
-    gateway_env+=(HTTPS_PROXY=http://127.0.0.1:7890)
-    echo "Using local Telegram proxy at 127.0.0.1:7890" >&2
-  fi
 
   printf -v gateway_command '%q ' env "${gateway_env[@]}" node "$repo_dir/src/gateway.mjs"
   printf -v gateway_log '%q' "$repo_dir/gateway.log"
